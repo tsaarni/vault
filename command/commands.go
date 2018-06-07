@@ -39,6 +39,7 @@ import (
 	credCentrify "github.com/hashicorp/vault-plugin-auth-centrify"
 	credGcp "github.com/hashicorp/vault-plugin-auth-gcp/plugin"
 	credKube "github.com/hashicorp/vault-plugin-auth-kubernetes"
+	credAlibaba "github.com/hashicorp/vault/builtin/credential/alibaba"
 	credAppId "github.com/hashicorp/vault/builtin/credential/app-id"
 	credAppRole "github.com/hashicorp/vault/builtin/credential/approle"
 	credAws "github.com/hashicorp/vault/builtin/credential/aws"
@@ -94,6 +95,7 @@ var (
 	}
 
 	credentialBackends = map[string]logical.Factory{
+		"alibaba":    credAlibaba.Factory,
 		"app-id":     credAppId.Factory,
 		"approle":    credAppRole.Factory,
 		"aws":        credAws.Factory,
@@ -198,6 +200,7 @@ var DeprecatedCommands map[string]cli.CommandFactory
 
 func initCommands(ui, serverCmdUi cli.Ui, runOpts *RunOptions) {
 	loginHandlers := map[string]LoginHandler{
+		// TODO alibaba CLI handler?
 		"aws":      &credAws.CLIHandler{},
 		"centrify": &credCentrify.CLIHandler{},
 		"cert":     &credCert.CLIHandler{},

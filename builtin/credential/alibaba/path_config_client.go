@@ -3,7 +3,7 @@ package alibaba
 import (
 	"context"
 
-	"github.com/aws/aws-sdk-go/aws"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 )

@@ -7,12 +7,12 @@ import (
 	"io/ioutil"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/vault/api"
-	"github.com/hashicorp/vault/helper/awsutil"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/session"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/service/sts"
+	"github.com/hashicorp/vault/helper/alibabautil"
 )
 
 type CLIHandler struct{}
@@ -22,7 +22,7 @@ type CLIHandler struct{}
 func GenerateLoginData(accessKey, secretKey, sessionToken, headerValue string) (map[string]interface{}, error) {
 	loginData := make(map[string]interface{})
 
-	credConfig := &awsutil.CredentialsConfig{
+	credConfig := &alibabautil.CredentialsConfig{
 		AccessKey:    accessKey,
 		SecretKey:    secretKey,
 		SessionToken: sessionToken,

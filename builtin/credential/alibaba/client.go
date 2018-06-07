@@ -4,15 +4,15 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/go-cleanhttp"
-	"github.com/hashicorp/vault/helper/awsutil"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/credentials/stscreds"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/session"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/service/ec2"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/service/iam"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/service/sts"
+	"github.com/hashicorp/vault/helper/alibabautil"
 	"github.com/hashicorp/vault/logical"
 )
 
@@ -24,7 +24,7 @@ import (
 // * Environment variables
 // * Instance metadata role
 func (b *backend) getRawClientConfig(ctx context.Context, s logical.Storage, region, clientType string) (*aws.Config, error) {
-	credsConfig := &awsutil.CredentialsConfig{
+	credsConfig := &alibabautil.CredentialsConfig{
 		Region: region,
 	}
 

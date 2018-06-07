@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws/endpoints"
-	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/endpoints"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/service/ec2"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/service/iam"
 	"github.com/hashicorp/vault/helper/consts"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
