@@ -58,8 +58,8 @@ func TestBackend_pathLogin_getCallerIdentityResponse(t *testing.T) {
 }
 
 func TestBackend_pathLogin_parseIamArn(t *testing.T) {
-	testParser := func(inputArn, expectedCanonicalArn string, expectedEntity iamEntity) {
-		entity, err := parseIamArn(inputArn)
+	testParser := func(inputArn, expectedCanonicalArn string, expectedEntity ramEntity) {
+		entity, err := parseRamArn(inputArn)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -67,45 +67,45 @@ func TestBackend_pathLogin_parseIamArn(t *testing.T) {
 			t.Fatalf("expected to canonicalize ARN %q into %q but got %q instead", inputArn, expectedCanonicalArn, entity.canonicalArn())
 		}
 		if *entity != expectedEntity {
-			t.Fatalf("expected to get iamEntity %#v from input ARN %q but instead got %#v", expectedEntity, inputArn, *entity)
+			t.Fatalf("expected to get ramEntity %#v from input ARN %q but instead got %#v", expectedEntity, inputArn, *entity)
 		}
 	}
 
 	testParser("arn:aws:iam::123456789012:user/UserPath/MyUserName",
 		"arn:aws:iam::123456789012:user/MyUserName",
-		iamEntity{Partition: "aws", AccountNumber: "123456789012", Type: "user", Path: "UserPath", FriendlyName: "MyUserName"},
+		ramEntity{Partition: "aws", AccountNumber: "123456789012", Type: "user", Path: "UserPath", FriendlyName: "MyUserName"},
 	)
 	canonicalRoleArn := "arn:aws:iam::123456789012:role/RoleName"
 	testParser("arn:aws:sts::123456789012:assumed-role/RoleName/RoleSessionName",
 		canonicalRoleArn,
-		iamEntity{Partition: "aws", AccountNumber: "123456789012", Type: "assumed-role", FriendlyName: "RoleName", SessionInfo: "RoleSessionName"},
+		ramEntity{Partition: "aws", AccountNumber: "123456789012", Type: "assumed-role", FriendlyName: "RoleName", SessionInfo: "RoleSessionName"},
 	)
 	testParser("arn:aws:iam::123456789012:role/RolePath/RoleName",
 		canonicalRoleArn,
-		iamEntity{Partition: "aws", AccountNumber: "123456789012", Type: "role", Path: "RolePath", FriendlyName: "RoleName"},
+		ramEntity{Partition: "aws", AccountNumber: "123456789012", Type: "role", Path: "RolePath", FriendlyName: "RoleName"},
 	)
 	testParser("arn:aws:iam::123456789012:instance-profile/profilePath/InstanceProfileName",
 		"",
-		iamEntity{Partition: "aws", AccountNumber: "123456789012", Type: "instance-profile", Path: "profilePath", FriendlyName: "InstanceProfileName"},
+		ramEntity{Partition: "aws", AccountNumber: "123456789012", Type: "instance-profile", Path: "profilePath", FriendlyName: "InstanceProfileName"},
 	)
 
 	// Test that it properly handles pathological inputs...
-	_, err := parseIamArn("")
+	_, err := parseRamArn("")
 	if err == nil {
 		t.Error("expected error from empty input string")
 	}
 
-	_, err = parseIamArn("arn:aws:iam::123456789012:role")
+	_, err = parseRamArn("arn:aws:iam::123456789012:role")
 	if err == nil {
 		t.Error("expected error from malformed ARN without a role name")
 	}
 
-	_, err = parseIamArn("arn:aws:iam")
+	_, err = parseRamArn("arn:aws:iam")
 	if err == nil {
 		t.Error("expected error from incomplete ARN (arn:aws:iam)")
 	}
 
-	_, err = parseIamArn("arn:aws:iam::1234556789012:/")
+	_, err = parseRamArn("arn:aws:iam::1234556789012:/")
 	if err == nil {
 		t.Error("expected error from empty principal type and no principal name (arn:aws:iam::1234556789012:/)")
 	}

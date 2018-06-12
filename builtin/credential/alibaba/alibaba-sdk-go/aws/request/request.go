@@ -102,7 +102,6 @@ func New(cfg aws.Config, clientInfo metadata.ClientInfo, handlers Handlers,
 	if method == "" {
 		method = "POST"
 	}
-
 	httpReq, _ := http.NewRequest(method, "", nil)
 
 	var err error

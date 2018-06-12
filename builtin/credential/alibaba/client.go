@@ -94,7 +94,10 @@ func (b *backend) getClientConfig(ctx context.Context, s logical.Storage, region
 		return nil, err
 	}
 	if stsRole != "" {
-		assumedCredentials := stscreds.NewCredentials(session.New(stsConfig), stsRole)
+		assumedCredentials, err := stscreds.NewCredentials(session.New(stsConfig), stsRole)
+		if err != nil {
+			return nil, err
+		}
 		// Test that we actually have permissions to assume the role
 		if _, err = assumedCredentials.Get(); err != nil {
 			return nil, err
@@ -102,7 +105,10 @@ func (b *backend) getClientConfig(ctx context.Context, s logical.Storage, region
 		config.Credentials = assumedCredentials
 	} else {
 		if b.defaultAWSAccountID == "" {
-			client := sts.New(session.New(stsConfig))
+			client, err := sts.New(session.New(stsConfig))
+			if err != nil {
+				return nil, err
+			}
 			if client == nil {
 				return nil, errwrap.Wrapf("could not obtain sts client: {{err}}", err)
 			}
@@ -214,7 +220,10 @@ func (b *backend) clientEC2(ctx context.Context, s logical.Storage, region, acco
 	}
 
 	// Create a new EC2 client object, cache it and return the same
-	client := ec2.New(session.New(awsConfig))
+	client, err := ec2.New(session.New(awsConfig))
+	if err != nil {
+		return nil, err
+	}
 	if client == nil {
 		return nil, fmt.Errorf("could not obtain ec2 client")
 	}
@@ -227,6 +236,7 @@ func (b *backend) clientEC2(ctx context.Context, s logical.Storage, region, acco
 	return b.EC2ClientsMap[region][stsRole], nil
 }
 
+// TODO - I thought IAM didn't care about region, so why is there one client per region here?
 // clientIAM creates a client to interact with AWS IAM API
 func (b *backend) clientIAM(ctx context.Context, s logical.Storage, region, accountID string) (*iam.IAM, error) {
 	stsRole, err := b.stsRoleForAccount(ctx, s, accountID)
@@ -263,7 +273,10 @@ func (b *backend) clientIAM(ctx context.Context, s logical.Storage, region, acco
 	}
 
 	// Create a new IAM client object, cache it and return the same
-	client := iam.New(session.New(awsConfig))
+	client, err := iam.New(session.New(awsConfig))
+	if err == nil {
+		return nil, err
+	}
 	if client == nil {
 		return nil, fmt.Errorf("could not obtain iam client")
 	}

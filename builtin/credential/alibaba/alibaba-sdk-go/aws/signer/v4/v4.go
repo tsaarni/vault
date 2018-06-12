@@ -56,7 +56,9 @@ package v4
 
 import (
 	"crypto/hmac"
+	"crypto/sha1"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -67,7 +69,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/hashicorp/go-uuid"
 	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws"
 	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/credentials"
 	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/request"
@@ -399,10 +403,15 @@ func (ctx *signingCtx) assignAmzQueryValues() {
 	}
 }
 
-// SignRequestHandler is a named request handler the SDK will use to sign
-// service client request with using the V4 signature.
-var SignRequestHandler = request.NamedHandler{
-	Name: "v4.SignRequestHandler", Fn: SignSDKRequest,
+func NewSignRequestHandler(accessKeySecret string) request.NamedHandler {
+	s := signRequestHandler{accessKeySecret: accessKeySecret}
+	return request.NamedHandler{
+		Name: "v4.SignRequestHandler", Fn: s.SignSDKRequest,
+	}
+}
+
+type signRequestHandler struct {
+	accessKeySecret string
 }
 
 // SignSDKRequest signs an AWS request with the V4 signature. This
@@ -416,72 +425,109 @@ var SignRequestHandler = request.NamedHandler{
 //
 // If the credentials of the request's config are set to
 // credentials.AnonymousCredentials the request will not be signed.
-func SignSDKRequest(req *request.Request) {
-	signSDKRequestWithCurrTime(req, time.Now)
-}
-
-// BuildNamedHandler will build a generic handler for signing.
-func BuildNamedHandler(name string, opts ...func(*Signer)) request.NamedHandler {
-	return request.NamedHandler{
-		Name: name,
-		Fn: func(req *request.Request) {
-			signSDKRequestWithCurrTime(req, time.Now, opts...)
-		},
+func (s *signRequestHandler) SignSDKRequest(req *request.Request) {
+	if err := s.signSDKRequestWithCurrTime(req, time.Now().UTC); err != nil {
+		// TODO - what to do? can't change the handler's method signature
 	}
 }
 
-func signSDKRequestWithCurrTime(req *request.Request, curTimeFn func() time.Time, opts ...func(*Signer)) {
-	// If the request does not need to be signed ignore the signing of the
-	// request if the AnonymousCredentials object is used.
-	if req.Config.Credentials == credentials.AnonymousCredentials {
-		return
+func (s *signRequestHandler) signSDKRequestWithCurrTime(req *request.Request, curTimeFn func() time.Time, opts ...func(*Signer)) error {
+	// Add signature-related parameters.
+	if req.HTTPRequest.URL.RawQuery != "" {
+		req.HTTPRequest.URL.RawQuery += "&"
 	}
-
-	region := req.ClientInfo.SigningRegion
-	if region == "" {
-		region = aws.StringValue(req.Config.Region)
-	}
-
-	name := req.ClientInfo.SigningName
-	if name == "" {
-		name = req.ClientInfo.ServiceName
-	}
-
-	v4 := NewSigner(req.Config.Credentials, func(v4 *Signer) {
-		v4.Debug = req.Config.LogLevel.Value()
-		v4.Logger = req.Config.Logger
-		v4.DisableHeaderHoisting = req.NotHoist
-		v4.currentTimeFn = curTimeFn
-		if name == "s3" {
-			// S3 service should not have any escaping applied
-			v4.DisableURIPathEscaping = true
+	req.HTTPRequest.URL.RawQuery += "Timestamp=" + curTimeFn().Format("2006-01-02T15:04:05Z")
+	req.HTTPRequest.URL.RawQuery += "&"
+	req.HTTPRequest.URL.RawQuery += "SignatureMethod=HMAC-SHA1"
+	req.HTTPRequest.URL.RawQuery += "&"
+	req.HTTPRequest.URL.RawQuery += "SignatureVersion=1.0"
+	if !strings.Contains(req.HTTPRequest.URL.RawQuery, "SignatureNonce") {
+		u, err := uuid.GenerateUUID()
+		if err != nil {
+			return err
 		}
-		// Prevents setting the HTTPRequest's Body. Since the Body could be
-		// wrapped in a custom io.Closer that we do not want to be stompped
-		// on top of by the signer.
-		v4.DisableRequestBodyOverwrite = true
-	})
-
-	for _, opt := range opts {
-		opt(v4)
+		req.HTTPRequest.URL.RawQuery += "&"
+		req.HTTPRequest.URL.RawQuery += "SignatureNonce=" + u
 	}
 
-	signingTime := req.Time
-	if !req.LastSignedAt.IsZero() {
-		signingTime = req.LastSignedAt
-	}
-
-	signedHeaders, err := v4.signWithBody(req.HTTPRequest, req.GetBody(),
-		name, region, req.ExpireTime, req.ExpireTime > 0, signingTime,
-	)
+	// Sign it and add the signature.
+	sig, err := signature(req.HTTPRequest.Method, req.HTTPRequest.URL.String(), s.accessKeySecret)
 	if err != nil {
-		req.Error = err
-		req.SignedHeaderVals = nil
-		return
+		return err
 	}
+	req.HTTPRequest.URL.RawQuery += "&"
+	req.HTTPRequest.URL.RawQuery += "Signature=" + sig
+	return nil
+}
 
-	req.SignedHeaderVals = signedHeaders
-	req.LastSignedAt = curTimeFn()
+// Implements https://www.alibabacloud.com/help/doc-detail/66384.htm?spm=a2c63.p38356.b99.6.402357366TMmpD
+func signature(reqMethod, urlStr, accessKeySecret string) (string, error) {
+	data, err := stringToSign(reqMethod, urlStr)
+	if err != nil {
+		return "", err
+	}
+	key := accessKeySecret + "&"
+	hash := hmac.New(sha1.New, []byte(key))
+	hash.Write([]byte(data))
+	return base64.StdEncoding.EncodeToString(hash.Sum(nil)), nil
+}
+
+func stringToSign(reqMethod, urlStr string) (string, error) {
+	// We can't just convert the requestURI to a net/url.URL and
+	// encode it because that doesn't produce the correct signing string.
+	parts := strings.Split(urlStr, "?")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("%s has no query string and can't be signed", urlStr)
+	}
+	query := parts[1]
+	kvs := strings.Split(query, "&")
+	sort.Strings(kvs)
+
+	encodedQuery := ""
+	for _, kv := range kvs {
+		pair := strings.Split(kv, "=")
+		if len(pair) != 2 {
+			return "", fmt.Errorf("%s doesn't look like a key value pair", kv)
+		}
+		if encodedQuery != "" {
+			encodedQuery += "%26" // encoded ampersand - TODO does this now mean I can just fucking encode it? LOL goddamn it.
+		}
+		encodedQuery += encode(pair[0]) + url.QueryEscape("=") + encode(pair[1])
+	}
+	return reqMethod + "&" + url.QueryEscape("/") + "&" + encodedQuery, nil
+}
+
+func encode(s string) string {
+	encoded := ""
+	for _, r := range s {
+		char := string(r)
+		switch {
+		case shouldNotEncode(char, r):
+			encoded += char
+		case char == " ":
+			encoded += "%20"
+		case char == ":":
+			encoded += "%253A"
+		default:
+			// While the signing algorithm does state there should be different
+			// behavior for extended UTF-8 characters, we haven't observed any
+			// such characters in use for the Alibaba endpoints, so this is good
+			// enough AS LONG AS the Chinese portal doesn't use Chinese characters
+			// in its URLs - this will be tested before the plugin is out.
+			encoded += url.QueryEscape(char)
+		}
+	}
+	return encoded
+}
+
+func shouldNotEncode(char string, r rune) bool {
+	if unicode.IsLetter(r) {
+		return true
+	}
+	if unicode.IsLetter(r) {
+		return true
+	}
+	return strings.Contains("-_.~", char)
 }
 
 const logSignInfoMsg = `DEBUG: Request Signature:

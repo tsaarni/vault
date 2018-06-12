@@ -1447,7 +1447,7 @@ func TestBackendAcc_LoginWithCallerIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Received error retrieving identity: %s", err)
 	}
-	entity, err := parseIamArn(*testIdentity.Arn)
+	entity, err := parseRamArn(*testIdentity.Arn)
 	if err != nil {
 		t.Fatal(err)
 	}

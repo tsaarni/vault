@@ -428,7 +428,8 @@ func mergeConfigSrcs(cfg, userCfg *aws.Config, envCfg envConfig, sharedCfg share
 				// with MFA.
 				return AssumeRoleTokenProviderNotSetError{}
 			}
-			cfg.Credentials = stscreds.NewCredentials(
+			var err error
+			cfg.Credentials, err = stscreds.NewCredentials(
 				&Session{
 					Config:   &cfgCp,
 					Handlers: handlers.Copy(),
@@ -449,6 +450,9 @@ func mergeConfigSrcs(cfg, userCfg *aws.Config, envCfg envConfig, sharedCfg share
 					}
 				},
 			)
+			if err != nil {
+				return err
+			}
 		} else if len(sharedCfg.Creds.AccessKeyID) > 0 {
 			cfg.Credentials = credentials.NewStaticCredentialsFromCreds(
 				sharedCfg.Creds,

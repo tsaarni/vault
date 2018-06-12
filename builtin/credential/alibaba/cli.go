@@ -49,7 +49,10 @@ func GenerateLoginData(accessKey, secretKey, sessionToken, headerValue string) (
 	}
 
 	var params *sts.GetCallerIdentityInput
-	svc := sts.New(stsSession)
+	svc, err := sts.New(stsSession)
+	if err != nil {
+		return nil, err
+	}
 	stsRequest, _ := svc.GetCallerIdentityRequest(params)
 
 	// Inject the required auth header value, if supplied, and then sign the request including that header

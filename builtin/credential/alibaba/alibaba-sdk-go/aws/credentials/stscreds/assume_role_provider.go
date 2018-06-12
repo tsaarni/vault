@@ -205,9 +205,13 @@ type AssumeRoleProvider struct {
 // It is safe to share the returned Credentials with multiple Sessions and
 // service clients. All access to the credentials and refreshing them
 // will be synchronized.
-func NewCredentials(c client.ConfigProvider, roleARN string, options ...func(*AssumeRoleProvider)) *credentials.Credentials {
+func NewCredentials(c client.ConfigProvider, roleARN string, options ...func(*AssumeRoleProvider)) (*credentials.Credentials, error) {
+	clnt, err := sts.New(c)
+	if err != nil {
+		return nil, err
+	}
 	p := &AssumeRoleProvider{
-		Client:   sts.New(c),
+		Client:   clnt,
 		RoleARN:  roleARN,
 		Duration: DefaultDuration,
 	}
@@ -216,7 +220,7 @@ func NewCredentials(c client.ConfigProvider, roleARN string, options ...func(*As
 		option(p)
 	}
 
-	return credentials.NewCredentials(p)
+	return credentials.NewCredentials(p), nil
 }
 
 // NewCredentialsWithClient returns a pointer to a new Credentials object wrapping the

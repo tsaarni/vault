@@ -492,7 +492,7 @@ func (b *backend) verifyInstanceMeetsRoleRequirements(ctx context.Context,
 
 		// Extract out the instance profile name from the instance
 		// profile ARN
-		iamInstanceProfileEntity, err := parseIamArn(iamInstanceProfileARN)
+		iamInstanceProfileEntity, err := parseRamArn(iamInstanceProfileARN)
 
 		if err != nil {
 			return nil, errwrap.Wrapf(fmt.Sprintf("failed to parse IAM instance profile ARN %q: {{err}}", iamInstanceProfileARN), err)
@@ -989,7 +989,7 @@ func (b *backend) pathLoginRenewIam(ctx context.Context, req *logical.Request, d
 			// check 3 is a bit more complex, so we do it last
 			fullArn := b.getCachedUserId(clientUserId)
 			if fullArn == "" {
-				entity, err := parseIamArn(canonicalArn)
+				entity, err := parseRamArn(canonicalArn)
 				if err != nil {
 					return nil, errwrap.Wrapf(fmt.Sprintf("error parsing ARN %q: {{err}}", canonicalArn), err)
 				}
@@ -1195,7 +1195,7 @@ func (b *backend) pathLoginUpdateIam(ctx context.Context, req *logical.Request, 
 		}, nil
 	}
 
-	entity, err := parseIamArn(callerID.Arn)
+	entity, err := parseRamArn(callerID.Arn)
 	if err != nil {
 		return logical.ErrorResponse(fmt.Sprintf("error parsing arn %q: %v", callerID.Arn, err)), nil
 	}
@@ -1341,31 +1341,36 @@ func hasValuesForIamAuth(data *framework.FieldData) (bool, bool) {
 		(hasRequestMethod || hasRequestURL || hasRequestBody || hasRequestHeaders)
 }
 
-func parseIamArn(iamArn string) (*iamEntity, error) {
-	// iamArn should look like one of the following:
-	// 1. arn:aws:iam::<account_id>:<entity_type>/<UserName>
-	// 2. arn:aws:sts::<account_id>:assumed-role/<RoleName>/<RoleSessionName>
+// Alibaba arns are very similar to AWS arns, but differ in the following ways:
+// - AWS arns start with "arn:" but Alibiba omits that field
+// - The next field is "aws" or "acs" depending on the cloud
+// - AWS "iam" == Alibaba "ram"
+//
+// A more visual example:
+// - Alibaba:     "acs:ram::123456789012:role/MyRole"
+// - AWS:     "arn:aws:iam::123456789012:role/MyRole"
+func parseRamArn(ramArn string) (*ramEntity, error) {
+	// ramArn should look like one of the following:
+	// 1. acs:iam::<account_id>:<entity_type>/<UserName>
+	// 2. acs:sts::<account_id>:assumed-role/<RoleName>/<RoleSessionName>
 	// if we get something like 2, then we want to transform that back to what
-	// most people would expect, which is arn:aws:iam::<account_id>:role/<RoleName>
-	var entity iamEntity
-	fullParts := strings.Split(iamArn, ":")
-	if len(fullParts) != 6 {
-		return nil, fmt.Errorf("unrecognized arn: contains %d colon-separated parts, expected 6", len(fullParts))
+	// most people would expect, which is acs:ram::<account_id>:role/<RoleName>
+	var entity ramEntity
+	fullParts := strings.Split(ramArn, ":")
+	if len(fullParts) != 5 {
+		return nil, fmt.Errorf("unrecognized arn: contains %d colon-separated parts, expected 5", len(fullParts))
 	}
-	if fullParts[0] != "arn" {
-		return nil, fmt.Errorf("unrecognized arn: does not begin with \"arn:\"")
+	if fullParts[0] != "acs" {
+		return nil, fmt.Errorf("unrecognized arn: does not begin with \"acs:\"")
 	}
-	// normally aws, but could be aws-cn or aws-us-gov
-	entity.Partition = fullParts[1]
-	if fullParts[2] != "iam" && fullParts[2] != "sts" {
-		return nil, fmt.Errorf("unrecognized service: %v, not one of iam or sts", fullParts[2])
+	entity.Partition = fullParts[0]
+	if fullParts[1] != "ram" && fullParts[1] != "sts" {
+		return nil, fmt.Errorf("unrecognized service: %v, not one of ram or sts", fullParts[1])
 	}
-	// fullParts[3] is the region, which doesn't matter for AWS IAM entities
-	entity.AccountNumber = fullParts[4]
-	// fullParts[5] would now be something like user/<UserName> or assumed-role/<RoleName>/<RoleSessionName>
-	parts := strings.Split(fullParts[5], "/")
+	entity.AccountNumber = fullParts[3]
+	parts := strings.Split(fullParts[4], "/")
 	if len(parts) < 2 {
-		return nil, fmt.Errorf("unrecognized arn: %q contains fewer than 2 slash-separated parts", fullParts[5])
+		return nil, fmt.Errorf("unrecognized arn: %q contains fewer than 2 slash-separated parts", fullParts[4])
 	}
 	entity.Type = parts[0]
 	entity.Path = strings.Join(parts[1:len(parts)-1], "/")
@@ -1382,7 +1387,7 @@ func parseIamArn(iamArn string) (*iamEntity, error) {
 	case "role":
 	case "instance-profile":
 	default:
-		return &iamEntity{}, fmt.Errorf("unrecognized principal type: %q", entity.Type)
+		return &ramEntity{}, fmt.Errorf("unrecognized principal type: %q", entity.Type)
 	}
 	return &entity, nil
 }
@@ -1589,7 +1594,7 @@ type roleTagLoginResponse struct {
 	DisallowReauthentication bool          `json:"disallow_reauthentication"`
 }
 
-type iamEntity struct {
+type ramEntity struct {
 	Partition     string
 	AccountNumber string
 	Type          string
@@ -1599,7 +1604,7 @@ type iamEntity struct {
 }
 
 // Returns a Vault-internal canonical ARN for referring to an IAM entity
-func (e *iamEntity) canonicalArn() string {
+func (e *ramEntity) canonicalArn() string {
 	entityType := e.Type
 	// canonicalize "assumed-role" into "role"
 	if entityType == "assumed-role" {
@@ -1613,8 +1618,8 @@ func (e *iamEntity) canonicalArn() string {
 	return fmt.Sprintf("arn:%s:iam::%s:%s/%s", e.Partition, e.AccountNumber, entityType, e.FriendlyName)
 }
 
-// This returns the "full" ARN of an iamEntity, how it would be referred to in AWS proper
-func (b *backend) fullArn(ctx context.Context, e *iamEntity, s logical.Storage) (string, error) {
+// This returns the "full" ARN of an ramEntity, how it would be referred to in AWS proper
+func (b *backend) fullArn(ctx context.Context, e *ramEntity, s logical.Storage) (string, error) {
 	// Not assuming path is reliable for any entity types
 	client, err := b.clientIAM(ctx, s, getAnyRegionForAwsPartition(e.Partition).ID(), e.AccountNumber)
 	if err != nil {

@@ -1,8 +1,6 @@
 // Package ec2query provides serialization of AWS EC2 requests and responses.
 package ec2query
 
-//go:generate go run -tags codegen ../../../models/protocol_tests/generate.go ../../../models/protocol_tests/input/ec2.json build_test.go
-
 import (
 	"net/url"
 
