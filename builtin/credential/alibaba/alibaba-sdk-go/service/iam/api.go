@@ -18828,12 +18828,12 @@ func (s *GetRoleInput) SetRoleName(v string) *GetRoleInput {
 
 // Contains the response to a successful GetRole request.
 type GetRoleOutput struct {
-	_ struct{} `type:"structure"`
+	RequestID string `json:"RequestId"`
 
 	// A structure containing details about the IAM role.
 	//
 	// Role is a required field
-	Role *Role `type:"structure" required:"true"`
+	Role *Role `json:"Role"`
 }
 
 // String returns the string representation
@@ -24494,45 +24494,36 @@ func (s ResyncMFADeviceOutput) GoString() string {
 // Contains information about an IAM role. This structure is returned as a response
 // element in several APIs that interact with roles.
 type Role struct {
-	_ struct{} `type:"structure"`
-
 	// The Amazon Resource Name (ARN) specifying the role. For more information
 	// about ARNs and how to use them in policies, see IAM Identifiers (http://docs.aws.amazon.com/IAM/latest/UserGuide/Using_Identifiers.html)
 	// in the IAM User Guide guide.
 	//
 	// Arn is a required field
-	Arn *string `min:"20" type:"string" required:"true"`
+	Arn *string `json:"Arn"`
 
 	// The policy that grants an entity permission to assume the role.
-	AssumeRolePolicyDocument *string `min:"1" type:"string"`
+	AssumeRolePolicyDocument *string `json:"AssumeRolePolicyDocument"`
 
 	// The date and time, in ISO 8601 date-time format (http://www.iso.org/iso/iso8601),
 	// when the role was created.
 	//
 	// CreateDate is a required field
-	CreateDate *time.Time `type:"timestamp" timestampFormat:"iso8601" required:"true"`
+	CreateDate *time.Time `json:"CreateDate"`
 
 	// A description of the role that you provide.
-	Description *string `type:"string"`
-
-	// The path to the role. For more information about paths, see IAM Identifiers
-	// (http://docs.aws.amazon.com/IAM/latest/UserGuide/Using_Identifiers.html)
-	// in the Using IAM guide.
-	//
-	// Path is a required field
-	Path *string `min:"1" type:"string" required:"true"`
+	Description *string `json:"Description"`
 
 	// The stable and unique string identifying the role. For more information about
 	// IDs, see IAM Identifiers (http://docs.aws.amazon.com/IAM/latest/UserGuide/Using_Identifiers.html)
 	// in the Using IAM guide.
 	//
 	// RoleId is a required field
-	RoleId *string `min:"16" type:"string" required:"true"`
+	RoleId *string `json:"RoleId"`
 
 	// The friendly name that identifies the role.
 	//
 	// RoleName is a required field
-	RoleName *string `min:"1" type:"string" required:"true"`
+	RoleName *string `json:"RoleName"`
 }
 
 // String returns the string representation
@@ -24566,12 +24557,6 @@ func (s *Role) SetCreateDate(v time.Time) *Role {
 // SetDescription sets the Description field's value.
 func (s *Role) SetDescription(v string) *Role {
 	s.Description = &v
-	return s
-}
-
-// SetPath sets the Path field's value.
-func (s *Role) SetPath(v string) *Role {
-	s.Path = &v
 	return s
 }
 

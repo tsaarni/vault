@@ -3,11 +3,10 @@ package query
 //go:generate go run -tags codegen ../../../models/protocol_tests/generate.go ../../../models/protocol_tests/output/query.json unmarshal_test.go
 
 import (
-	"encoding/xml"
+	"encoding/json"
 
 	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/awserr"
 	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/request"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/private/protocol/xml/xmlutil"
 )
 
 // UnmarshalHandler is a named request handler for unmarshaling query protocol requests
@@ -20,9 +19,7 @@ var UnmarshalMetaHandler = request.NamedHandler{Name: "awssdk.query.UnmarshalMet
 func Unmarshal(r *request.Request) {
 	defer r.HTTPResponse.Body.Close()
 	if r.DataFilled() {
-		decoder := xml.NewDecoder(r.HTTPResponse.Body)
-		err := xmlutil.UnmarshalXML(r.Data, decoder, r.Operation.Name+"Result")
-		if err != nil {
+		if err := json.NewDecoder(r.HTTPResponse.Body).Decode(r.Data); err != nil {
 			r.Error = awserr.New("SerializationError", "failed decoding Query response", err)
 			return
 		}
