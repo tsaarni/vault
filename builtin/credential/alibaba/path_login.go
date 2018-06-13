@@ -1638,6 +1638,8 @@ func (b *backend) fullArn(ctx context.Context, e *ramEntity, s logical.Storage) 
 		if resp == nil {
 			return "", fmt.Errorf("nil response from GetUser")
 		}
+		// TODO test to see if this works. It looks like GetUser doesn't return an arn.
+		// If not, we might have gotten it earlier on when we were resolving arns to real ID's - m
 		return *(resp.User.Arn), nil
 	case "assumed-role":
 		fallthrough

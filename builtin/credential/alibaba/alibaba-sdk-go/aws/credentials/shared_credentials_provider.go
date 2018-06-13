@@ -25,7 +25,7 @@ var (
 type SharedCredentialsProvider struct {
 	// Path to the shared credentials file.
 	//
-	// If empty will look for "AWS_SHARED_CREDENTIALS_FILE" env variable. If the
+	// If empty will look for "ALIBABA_SHARED_CREDENTIALS_FILE" env variable. If the
 	// env value is empty will default to current user's home directory.
 	// Linux/OSX: "$HOME/.aws/credentials"
 	// Windows:   "%USERPROFILE%\.aws\credentials"
@@ -119,7 +119,7 @@ func (p *SharedCredentialsProvider) filename() (string, error) {
 		return p.Filename, nil
 	}
 
-	if p.Filename = os.Getenv("AWS_SHARED_CREDENTIALS_FILE"); len(p.Filename) != 0 {
+	if p.Filename = os.Getenv("ALIBABA_SHARED_CREDENTIALS_FILE"); len(p.Filename) != 0 {
 		return p.Filename, nil
 	}
 

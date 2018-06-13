@@ -54,7 +54,7 @@ func Get() Defaults {
 func Config() *aws.Config {
 	return aws.NewConfig().
 		WithCredentials(credentials.AnonymousCredentials).
-		WithRegion(os.Getenv("AWS_REGION")).
+		WithRegion(os.Getenv("ALIBABA_REGION")).
 		WithHTTPClient(http.DefaultClient).
 		WithMaxRetries(aws.UseServiceDefaultRetries).
 		WithLogger(aws.NewDefaultLogger()).

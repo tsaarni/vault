@@ -6813,7 +6813,7 @@ const opGetUser = "GetUser"
 func (c *IAM) GetUserRequest(input *GetUserInput) (req *request.Request, output *GetUserOutput) {
 	op := &request.Operation{
 		Name:       opGetUser,
-		HTTPMethod: "POST",
+		HTTPMethod: "GET",
 		HTTPPath:   "/",
 	}
 
@@ -6823,6 +6823,12 @@ func (c *IAM) GetUserRequest(input *GetUserInput) (req *request.Request, output 
 
 	output = &GetUserOutput{}
 	req = c.newRequest(op, input, output)
+
+	userName := *input.UserName
+	req.HTTPRequest.URL.RawQuery += "Action=GetUser"
+	req.HTTPRequest.URL.RawQuery += "&"
+	req.HTTPRequest.URL.RawQuery += "UserName=" + userName
+
 	return
 }
 
@@ -19350,12 +19356,12 @@ func (s *GetUserInput) SetUserName(v string) *GetUserInput {
 
 // Contains the response to a successful GetUser request.
 type GetUserOutput struct {
-	_ struct{} `type:"structure"`
+	RequestID string `json:"RequestId"`
 
 	// A structure containing details about the IAM user.
 	//
 	// User is a required field
-	User *User `type:"structure" required:"true"`
+	User *User `json:"User"`
 }
 
 // String returns the string representation
@@ -27603,60 +27609,27 @@ func (s *UploadSigningCertificateOutput) SetCertificate(v *SigningCertificate) *
 //
 //    * ListUsers
 type User struct {
-	_ struct{} `type:"structure"`
-
-	// The Amazon Resource Name (ARN) that identifies the user. For more information
-	// about ARNs and how to use ARNs in policies, see IAM Identifiers (http://docs.aws.amazon.com/IAM/latest/UserGuide/Using_Identifiers.html)
-	// in the Using IAM guide.
-	//
-	// Arn is a required field
-	Arn *string `min:"20" type:"string" required:"true"`
+	Arn *string `json:"Arn"`
 
 	// The date and time, in ISO 8601 date-time format (http://www.iso.org/iso/iso8601),
 	// when the user was created.
 	//
 	// CreateDate is a required field
-	CreateDate *time.Time `type:"timestamp" timestampFormat:"iso8601" required:"true"`
+	CreateDate *time.Time `json:"CreateDate"`
 
-	// The date and time, in ISO 8601 date-time format (http://www.iso.org/iso/iso8601),
-	// when the user's password was last used to sign in to an AWS website. For
-	// a list of AWS websites that capture a user's last sign-in time, see the Credential
-	// Reports (http://docs.aws.amazon.com/IAM/latest/UserGuide/credential-reports.html)
-	// topic in the Using IAM guide. If a password is used more than once in a five-minute
-	// span, only the first use is returned in this field. If the field is null
-	// (no value) then it indicates that they never signed in with a password. This
-	// can be because:
-	//
-	//    * The user never had a password.
-	//
-	//    * A password exists but has not been used since IAM started tracking this
-	//    information on October 20th, 2014.
-	//
-	// A null does not mean that the user never had a password. Also, if the user
-	// does not currently have a password, but had one in the past, then this field
-	// contains the date and time the most recent password was used.
-	//
-	// This value is returned only in the GetUser and ListUsers actions.
-	PasswordLastUsed *time.Time `type:"timestamp" timestampFormat:"iso8601"`
-
-	// The path to the user. For more information about paths, see IAM Identifiers
-	// (http://docs.aws.amazon.com/IAM/latest/UserGuide/Using_Identifiers.html)
-	// in the Using IAM guide.
-	//
-	// Path is a required field
-	Path *string `min:"1" type:"string" required:"true"`
+	LastLoginDate *time.Time `json:"LastLoginDate"`
 
 	// The stable and unique string identifying the user. For more information about
 	// IDs, see IAM Identifiers (http://docs.aws.amazon.com/IAM/latest/UserGuide/Using_Identifiers.html)
 	// in the Using IAM guide.
 	//
 	// UserId is a required field
-	UserId *string `min:"16" type:"string" required:"true"`
+	UserId *string `json:"UserId"`
 
 	// The friendly name identifying the user.
 	//
 	// UserName is a required field
-	UserName *string `min:"1" type:"string" required:"true"`
+	UserName *string `json:"UserName"`
 }
 
 // String returns the string representation
@@ -27669,27 +27642,15 @@ func (s User) GoString() string {
 	return s.String()
 }
 
-// SetArn sets the Arn field's value.
-func (s *User) SetArn(v string) *User {
-	s.Arn = &v
-	return s
-}
-
 // SetCreateDate sets the CreateDate field's value.
 func (s *User) SetCreateDate(v time.Time) *User {
 	s.CreateDate = &v
 	return s
 }
 
-// SetPasswordLastUsed sets the PasswordLastUsed field's value.
-func (s *User) SetPasswordLastUsed(v time.Time) *User {
-	s.PasswordLastUsed = &v
-	return s
-}
-
-// SetPath sets the Path field's value.
-func (s *User) SetPath(v string) *User {
-	s.Path = &v
+// SetLastLoginDate sets the PasswordLastUsed field's value.
+func (s *User) SetLastLoginDate(v time.Time) *User {
+	s.LastLoginDate = &v
 	return s
 }
 

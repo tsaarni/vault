@@ -9,6 +9,8 @@ import (
 	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/private/protocol/query"
 )
 
+const version = "2015-04-01"
+
 // STS provides the API operation methods for making requests to
 // AWS Security Token Service. See this package's package overview docs
 // for details on the service.
@@ -69,6 +71,7 @@ func newClient(cfg aws.Config, handlers request.Handlers, endpoint, signingRegio
 
 	// Handlers
 	svc.Handlers.Build.PushBackNamed(query.NewBuildHandler(creds.AccessKeyID))
+	svc.Handlers.Build.PushBackNamed(BuildHandler)
 	svc.Handlers.Sign.PushBackNamed(v4.NewSignRequestHandler(creds.SecretAccessKey))
 	svc.Handlers.Unmarshal.PushBackNamed(query.UnmarshalHandler)
 	svc.Handlers.UnmarshalMeta.PushBackNamed(query.UnmarshalMetaHandler)
@@ -93,4 +96,16 @@ func (c *STS) newRequest(op *request.Operation, params, data interface{}) *reque
 	}
 
 	return req
+}
+
+// BuildHandler is a named request handler for building query protocol requests
+var BuildHandler = request.NamedHandler{Name: "awssdk.sts.Build", Fn: Build}
+
+// Build builds a request for an AWS Query service.
+// Version varies by service endpoint.
+func Build(r *request.Request) {
+	if r.HTTPRequest.URL.RawQuery != "" {
+		r.HTTPRequest.URL.RawQuery += "&"
+	}
+	r.HTTPRequest.URL.RawQuery += "Version=" + version
 }

@@ -7,7 +7,10 @@ import (
 	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/request"
 	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/signer/v4"
 	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/private/protocol/ec2query"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/private/protocol/query"
 )
+
+const version = "2014-05-26"
 
 // EC2 provides the API operation methods for making requests to
 // Amazon Elastic Compute Cloud. See this package's package overview docs
@@ -68,7 +71,8 @@ func newClient(cfg aws.Config, handlers request.Handlers, endpoint, signingRegio
 	}
 
 	// Handlers
-	svc.Handlers.Build.PushBackNamed(ec2query.BuildHandler)
+	svc.Handlers.Build.PushBackNamed(query.NewBuildHandler(creds.AccessKeyID))
+	svc.Handlers.Build.PushBackNamed(BuildHandler)
 	svc.Handlers.Sign.PushBackNamed(v4.NewSignRequestHandler(creds.SecretAccessKey))
 	svc.Handlers.Unmarshal.PushBackNamed(ec2query.UnmarshalHandler)
 	svc.Handlers.UnmarshalMeta.PushBackNamed(ec2query.UnmarshalMetaHandler)
@@ -93,4 +97,16 @@ func (c *EC2) newRequest(op *request.Operation, params, data interface{}) *reque
 	}
 
 	return req
+}
+
+// BuildHandler is a named request handler for building query protocol requests
+var BuildHandler = request.NamedHandler{Name: "awssdk.ecs.Build", Fn: Build}
+
+// Build builds a request for an AWS Query service.
+// Version varies by service endpoint.
+func Build(r *request.Request) {
+	if r.HTTPRequest.URL.RawQuery != "" {
+		r.HTTPRequest.URL.RawQuery += "&"
+	}
+	r.HTTPRequest.URL.RawQuery += "Version=" + version
 }

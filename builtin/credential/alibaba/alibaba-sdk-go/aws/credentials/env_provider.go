@@ -28,9 +28,9 @@ var (
 //
 // Environment variables used:
 //
-// * Access Key ID:     AWS_ACCESS_KEY_ID or AWS_ACCESS_KEY
+// * Access Key ID:     ALIBABA_ACCESS_KEY_ID
 //
-// * Secret Access Key: AWS_SECRET_ACCESS_KEY or AWS_SECRET_KEY
+// * Secret Access Key: ALIBABA_ACCESS_KEY_ID
 type EnvProvider struct {
 	retrieved bool
 }
@@ -45,15 +45,8 @@ func NewEnvCredentials() *Credentials {
 func (e *EnvProvider) Retrieve() (Value, error) {
 	e.retrieved = false
 
-	id := os.Getenv("AWS_ACCESS_KEY_ID")
-	if id == "" {
-		id = os.Getenv("AWS_ACCESS_KEY")
-	}
-
-	secret := os.Getenv("AWS_SECRET_ACCESS_KEY")
-	if secret == "" {
-		secret = os.Getenv("AWS_SECRET_KEY")
-	}
+	id := os.Getenv("ALIBABA_ACCESS_KEY_ID")
+	secret := os.Getenv("ALIBABA_SECRET_ACCESS_KEY")
 
 	if id == "" {
 		return Value{ProviderName: EnvProviderName}, ErrAccessKeyIDNotFound
@@ -67,7 +60,7 @@ func (e *EnvProvider) Retrieve() (Value, error) {
 	return Value{
 		AccessKeyID:     id,
 		SecretAccessKey: secret,
-		SessionToken:    os.Getenv("AWS_SESSION_TOKEN"),
+		SessionToken:    os.Getenv("ALIBABA_SESSION_TOKEN"),
 		ProviderName:    EnvProviderName,
 	}, nil
 }

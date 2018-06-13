@@ -9,9 +9,7 @@ import (
 	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/private/protocol/query"
 )
 
-const (
-	version = "2015-05-01"
-)
+const version = "2015-05-01"
 
 // IAM provides the API operation methods for making requests to
 // AWS Identity and Access Management. See this package's package overview docs

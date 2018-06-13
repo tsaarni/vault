@@ -6,10 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/credentials"
 	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/endpoints"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/session"
 	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/service/ec2"
 	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/service/iam"
 	"github.com/hashicorp/vault/helper/consts"
@@ -218,24 +215,26 @@ func (b *backend) resolveArnToRealUniqueId(ctx context.Context, s logical.Storag
 		return "", err
 	}
 
-	endpoint := "https://ram.aliyuncs.com"
-	region := "us-east-1"
+	// This odd-looking code is here because IAM is an inherently global service. IAM and STS ARNs
+	// don't have regions in them, and there is only a single global endpoint for IAM; see
+	// http://docs.aws.amazon.com/general/latest/gr/rande.html#iam_region
+	// However, the ARNs do have a partition in them, because the GovCloud and China partitions DO
+	// have their own separate endpoints, and the partition is encoded in the ARN. If Amazon's Go SDK
+	// would allow us to pass a partition back to the IAM client, it would be much simpler. But it
+	// doesn't appear that's possible, so in order to properly support GovCloud and China, we do a
+	// circular dance of extracting the partition from the ARN, finding any arbitrary region in the
+	// partition, and passing that region back back to the SDK, so that the SDK can figure out the
+	// proper partition from the arbitrary region we passed in to look up the endpoint.
+	// Sigh
+	region := getAnyRegionForAwsPartition(entity.Partition)
+	if region == nil {
+		return "", fmt.Errorf("unable to resolve partition %q to a region", entity.Partition)
+	}
 
-	// TODO this code is tested via the Global Portal. There's a possibility it won't work with the
-	// Chinese portal. Need to test that way too.
-	// TODO also need to work through how the access key will be provided because it's a required param.
-	// Either in the config, or environment. I think it should be the env first, config second, so you
-	// can override it on the fly if you need to?
-	iamClient, err := iam.New(session.New(&aws.Config{
-		Credentials: credentials.NewEnvCredentials(),
-		Endpoint:    &endpoint,
-		Region:      &region,
-		LogLevel:    aws.LogLevel(aws.LogDebugWithHTTPBody),
-	}))
+	iamClient, err := b.clientIAM(ctx, s, region.ID(), entity.AccountNumber)
 	if err != nil {
 		return "", err
 	}
-
 	switch entity.Type {
 	case "user":
 		userInfo, err := iamClient.GetUser(&iam.GetUserInput{UserName: &entity.FriendlyName})
@@ -247,7 +246,6 @@ func (b *backend) resolveArnToRealUniqueId(ctx context.Context, s logical.Storag
 		}
 		return *userInfo.User.UserId, nil
 	case "role":
-		// TODO replace with https://www.alibabacloud.com/help/doc-detail/28711.htm?spm=a2c63.p38356.b99.105.317830596yns4e
 		roleInfo, err := iamClient.GetRole(&iam.GetRoleInput{RoleName: &entity.FriendlyName})
 		if err != nil {
 			return "", err
@@ -256,15 +254,8 @@ func (b *backend) resolveArnToRealUniqueId(ctx context.Context, s logical.Storag
 			return "", fmt.Errorf("got nil result from GetRole")
 		}
 		return *roleInfo.Role.RoleId, nil
-	case "instance-profile":
-		profileInfo, err := iamClient.GetInstanceProfile(&iam.GetInstanceProfileInput{InstanceProfileName: &entity.FriendlyName})
-		if err != nil {
-			return "", err
-		}
-		if profileInfo == nil {
-			return "", fmt.Errorf("got nil result from GetInstanceProfile")
-		}
-		return *profileInfo.InstanceProfile.InstanceProfileId, nil
+	//case "instance-profile":
+	// This has no equivalent method in Alibaba.
 	default:
 		return "", fmt.Errorf("unrecognized error type %#v", entity.Type)
 	}
@@ -274,10 +265,6 @@ func (b *backend) resolveArnToRealUniqueId(ctx context.Context, s logical.Storag
 // the "Enumerating Regions and Endpoint Metadata" section
 func getAnyRegionForAwsPartition(partitionId string) *endpoints.Region {
 	resolver := endpoints.DefaultResolver()
-	// Partitions are like how Alibaba has a Chinese Portal, and a Global Portal.
-	// Within each of these, there would be differing regions, zones, and possibly endpoints.
-	// The resolver gets seeded with hard-coded partitions to expect, ex. awsPartition,
-	// and then this happens.
 	partitions := resolver.(endpoints.EnumPartitions).Partitions()
 
 	for _, p := range partitions {

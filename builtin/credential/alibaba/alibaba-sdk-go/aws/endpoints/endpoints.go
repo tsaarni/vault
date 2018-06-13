@@ -129,7 +129,7 @@ type EnumPartitions interface {
 // as the second parameter.
 //
 // This example shows how  to get the regions for DynamoDB in the AWS partition.
-//    rs, exists := endpoints.RegionsForService(endpoints.DefaultPartitions(), endpoints.AwsPartitionID, endpoints.DynamodbServiceID)
+//    rs, exists := endpoints.RegionsForService(endpoints.DefaultPartitions(), endpoints.AcsPartitionID, endpoints.DynamodbServiceID)
 //
 // This is equivalent to using the partition directly.
 //    rs := endpoints.AwsPartition().Services()[endpoints.DynamodbServiceID].Regions()

@@ -34,7 +34,17 @@ func (b *backend) getRawClientConfig(ctx context.Context, s logical.Storage, reg
 		return nil, err
 	}
 
+	// Set the initial client settings.
 	endpoint := aws.String("")
+	switch {
+	case clientType == "ec2":
+		endpoint = aws.String("https://ecs.aliyuncs.com")
+	case clientType == "iam":
+		endpoint = aws.String("https://ram.aliyuncs.com")
+	case clientType == "sts":
+		endpoint = aws.String("https://sts.aliyuncs.com")
+	}
+
 	var maxRetries int = aws.UseServiceDefaultRetries
 	if config != nil {
 		// Override the default endpoint with the configured endpoint.
@@ -69,6 +79,7 @@ func (b *backend) getRawClientConfig(ctx context.Context, s logical.Storage, reg
 		HTTPClient:  cleanhttp.DefaultClient(),
 		Endpoint:    endpoint,
 		MaxRetries:  aws.Int(maxRetries),
+		LogLevel:    aws.LogLevel(aws.LogDebugWithHTTPBody),
 	}, nil
 }
 
@@ -274,7 +285,7 @@ func (b *backend) clientIAM(ctx context.Context, s logical.Storage, region, acco
 
 	// Create a new IAM client object, cache it and return the same
 	client, err := iam.New(session.New(awsConfig))
-	if err == nil {
+	if err != nil {
 		return nil, err
 	}
 	if client == nil {
