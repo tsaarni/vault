@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"reflect"
@@ -25,19 +26,27 @@ var (
 
 // mockExpiration returns a mock expiration manager
 func mockExpiration(t testing.TB) *ExpirationManager {
-	_, ts, _, _ := TestCoreWithTokenStore(t)
-	return ts.expiration
+	c, _, _ := TestCoreUnsealed(t)
+	return c.expiration
 }
 
 func mockBackendExpiration(t testing.TB, backend physical.Backend) (*Core, *ExpirationManager) {
-	c, ts, _, _ := TestCoreWithBackendTokenStore(t, backend)
-	return c, ts.expiration
+	c, _, _ := TestCoreUnsealedBackend(t, backend)
+	return c, c.expiration
 }
 
 func TestExpiration_Tidy(t *testing.T) {
 	var err error
 
 	exp := mockExpiration(t)
+
+	// We use this later for tidy testing where we need to check the output
+	logOut := new(bytes.Buffer)
+	logger := log.New(&log.LoggerOptions{
+		Output: logOut,
+	})
+	exp.logger = logger
+
 	if err := exp.Restore(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -212,9 +221,11 @@ func TestExpiration_Tidy(t *testing.T) {
 		}
 	}
 
-	if !(err1 != nil && err1.Error() == "tidy operation on leases is already in progress") &&
-		!(err2 != nil && err2.Error() == "tidy operation on leases is already in progress") {
-		t.Fatalf("expected at least one of err1 or err2 to be set; err1: %#v\n err2:%#v\n", err1, err2)
+	if err1 != nil || err2 != nil {
+		t.Fatalf("got an error: err1: %v; err2: %v", err1, err2)
+	}
+	if !strings.Contains(logOut.String(), "tidy operation on leases is already in progress") {
+		t.Fatalf("expected to see a warning saying operation in progress, output is %s", logOut.String())
 	}
 
 	root, err := exp.tokenStore.rootToken(context.Background())
@@ -293,7 +304,8 @@ func BenchmarkExpiration_Restore_InMem(b *testing.B) {
 }
 
 func benchmarkExpirationBackend(b *testing.B, physicalBackend physical.Backend, numLeases int) {
-	c, exp := mockBackendExpiration(b, physicalBackend)
+	c, _, _ := TestCoreUnsealedBackend(b, physicalBackend)
+	exp := c.expiration
 	noop := &NoopBackend{}
 	view := NewBarrierView(c.barrier, "logical/")
 	meUUID, err := uuid.GenerateUUID()
@@ -735,7 +747,7 @@ func TestExpiration_RevokeByToken(t *testing.T) {
 	}
 
 	// Should nuke all the keys
-	te := &TokenEntry{
+	te := &logical.TokenEntry{
 		ID: "foobarbaz",
 	}
 	if err := exp.RevokeByToken(te); err != nil {
@@ -822,7 +834,7 @@ func TestExpiration_RevokeByToken_Blocking(t *testing.T) {
 	}
 
 	// Should nuke all the keys
-	te := &TokenEntry{
+	te := &logical.TokenEntry{
 		ID: "foobarbaz",
 	}
 	if err := exp.RevokeByToken(te); err != nil {
@@ -898,7 +910,7 @@ func TestExpiration_RenewToken(t *testing.T) {
 
 func TestExpiration_RenewToken_period(t *testing.T) {
 	exp := mockExpiration(t)
-	root := &TokenEntry{
+	root := &logical.TokenEntry{
 		Policies:     []string{"root"},
 		Path:         "auth/token/root",
 		DisplayName:  "root",
@@ -1603,7 +1615,7 @@ func TestLeaseEntry(t *testing.T) {
 }
 
 func TestExpiration_RevokeForce(t *testing.T) {
-	core, _, _, root := TestCoreWithTokenStore(t)
+	core, _, root := TestCoreUnsealed(t)
 
 	core.logicalBackends["badrenew"] = badRenewFactory
 	me := &MountEntry{
@@ -1651,7 +1663,7 @@ func TestExpiration_RevokeForce(t *testing.T) {
 }
 
 func TestExpiration_RevokeForceSingle(t *testing.T) {
-	core, _, _, root := TestCoreWithTokenStore(t)
+	core, _, root := TestCoreUnsealed(t)
 
 	core.logicalBackends["badrenew"] = badRenewFactory
 	me := &MountEntry{

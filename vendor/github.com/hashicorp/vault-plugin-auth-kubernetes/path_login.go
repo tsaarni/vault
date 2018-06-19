@@ -10,7 +10,9 @@ import (
 	"github.com/SermoDigital/jose/crypto"
 	"github.com/SermoDigital/jose/jws"
 	"github.com/SermoDigital/jose/jwt"
+	"github.com/hashicorp/errwrap"
 	multierror "github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/vault/helper/cidrutil"
 	"github.com/hashicorp/vault/helper/strutil"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
@@ -77,6 +79,11 @@ func (b *kubeAuthBackend) pathLogin() framework.OperationFunc {
 			return logical.ErrorResponse(fmt.Sprintf("invalid role name \"%s\"", roleName)), nil
 		}
 
+		// Check for a CIDR match.
+		if req.Connection != nil && !cidrutil.RemoteAddrIsOk(req.Connection.RemoteAddr, role.BoundCIDRs) {
+			return logical.ErrorResponse("request originated from invalid CIDR"), nil
+		}
+
 		config, err := b.config(ctx, req.Storage)
 		if err != nil {
 			return nil, err
@@ -114,12 +121,13 @@ func (b *kubeAuthBackend) pathLogin() framework.OperationFunc {
 					"service_account_secret_name": serviceAccount.SecretName,
 					"role": roleName,
 				},
-				DisplayName: serviceAccount.Name,
+				DisplayName: fmt.Sprintf("%s:%s", serviceAccount.Namespace, serviceAccount.Name),
 				LeaseOptions: logical.LeaseOptions{
 					Renewable: true,
 					TTL:       role.TTL,
 					MaxTTL:    role.MaxTTL,
 				},
+				BoundCIDRs: role.BoundCIDRs,
 			},
 		}
 
@@ -242,7 +250,7 @@ func (b *kubeAuthBackend) parseAndValidateJWT(jwtStr string, role *roleStorageEn
 
 		// validates the signature and then runs the claim validation
 		if err := parsedJWT.Validate(cert, signingMethod); err != nil {
-			return err
+			return errwrap.Wrapf("failed to validate JWT: {{err}}", err)
 		}
 
 		return nil
