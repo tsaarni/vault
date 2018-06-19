@@ -73,20 +73,20 @@ func TestBackend_pathLogin_parseIamArn(t *testing.T) {
 
 	testParser("arn:aws:iam::123456789012:user/UserPath/MyUserName",
 		"arn:aws:iam::123456789012:user/MyUserName",
-		ramEntity{Partition: "aws", AccountNumber: "123456789012", Type: "user", Path: "UserPath", FriendlyName: "MyUserName"},
+		ramEntity{ACS: "aws", AccountNumber: "123456789012", Type: "user", Path: "UserPath", FriendlyName: "MyUserName"},
 	)
 	canonicalRoleArn := "arn:aws:iam::123456789012:role/RoleName"
 	testParser("arn:aws:sts::123456789012:assumed-role/RoleName/RoleSessionName",
 		canonicalRoleArn,
-		ramEntity{Partition: "aws", AccountNumber: "123456789012", Type: "assumed-role", FriendlyName: "RoleName", SessionInfo: "RoleSessionName"},
+		ramEntity{ACS: "aws", AccountNumber: "123456789012", Type: "assumed-role", FriendlyName: "RoleName", SessionInfo: "RoleSessionName"},
 	)
 	testParser("arn:aws:iam::123456789012:role/RolePath/RoleName",
 		canonicalRoleArn,
-		ramEntity{Partition: "aws", AccountNumber: "123456789012", Type: "role", Path: "RolePath", FriendlyName: "RoleName"},
+		ramEntity{ACS: "aws", AccountNumber: "123456789012", Type: "role", Path: "RolePath", FriendlyName: "RoleName"},
 	)
 	testParser("arn:aws:iam::123456789012:instance-profile/profilePath/InstanceProfileName",
 		"",
-		ramEntity{Partition: "aws", AccountNumber: "123456789012", Type: "instance-profile", Path: "profilePath", FriendlyName: "InstanceProfileName"},
+		ramEntity{ACS: "aws", AccountNumber: "123456789012", Type: "instance-profile", Path: "profilePath", FriendlyName: "InstanceProfileName"},
 	)
 
 	// Test that it properly handles pathological inputs...

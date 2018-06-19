@@ -8,8 +8,8 @@ import (
 	"github.com/hashicorp/vault/logical/framework"
 )
 
-// awsStsEntry is used to store details of an STS role for assumption
-type awsStsEntry struct {
+// alibabaSTSEntry is used to store details of an STS role for assumption
+type alibabaSTSEntry struct {
 	StsRole string `json:"sts_role"`
 }
 
@@ -32,13 +32,13 @@ func pathConfigSts(b *backend) *framework.Path {
 		Fields: map[string]*framework.FieldSchema{
 			"account_id": {
 				Type: framework.TypeString,
-				Description: `AWS account ID to be associated with STS role. If set,
-Vault will use assumed credentials to verify any login attempts from EC2
+				Description: `Alibaba account ID to be associated with STS role. If set,
+Vault will use assumed credentials to verify any login attempts from ECS
 instances in this account.`,
 			},
 			"sts_role": {
 				Type: framework.TypeString,
-				Description: `AWS ARN for STS role to be assumed when interacting with the account specified.
+				Description: `Alibaba ARN for STS role to be assumed when interacting with the account specified.
 The Vault server must have permissions to assume this role.`,
 			},
 		},
@@ -87,7 +87,7 @@ func (b *backend) pathStsList(ctx context.Context, req *logical.Request, data *f
 // nonLockedSetAwsStsEntry creates or updates an STS role association with the given accountID
 // This method does not acquire the write lock before creating or updating. If locking is
 // desired, use lockedSetAwsStsEntry instead
-func (b *backend) nonLockedSetAwsStsEntry(ctx context.Context, s logical.Storage, accountID string, stsEntry *awsStsEntry) error {
+func (b *backend) nonLockedSetAwsStsEntry(ctx context.Context, s logical.Storage, accountID string, stsEntry *alibabaSTSEntry) error {
 	if accountID == "" {
 		return fmt.Errorf("missing AWS account ID")
 	}
@@ -110,7 +110,7 @@ func (b *backend) nonLockedSetAwsStsEntry(ctx context.Context, s logical.Storage
 
 // lockedSetAwsStsEntry creates or updates an STS role association with the given accountID
 // This method acquires the write lock before creating or updating the STS entry.
-func (b *backend) lockedSetAwsStsEntry(ctx context.Context, s logical.Storage, accountID string, stsEntry *awsStsEntry) error {
+func (b *backend) lockedSetAwsStsEntry(ctx context.Context, s logical.Storage, accountID string, stsEntry *alibabaSTSEntry) error {
 	if accountID == "" {
 		return fmt.Errorf("missing AWS account ID")
 	}
@@ -128,7 +128,7 @@ func (b *backend) lockedSetAwsStsEntry(ctx context.Context, s logical.Storage, a
 // nonLockedAwsStsEntry returns the STS role associated with the given accountID.
 // This method does not acquire the read lock before returning information. If locking is
 // desired, use lockedAwsStsEntry instead
-func (b *backend) nonLockedAwsStsEntry(ctx context.Context, s logical.Storage, accountID string) (*awsStsEntry, error) {
+func (b *backend) nonLockedAwsStsEntry(ctx context.Context, s logical.Storage, accountID string) (*alibabaSTSEntry, error) {
 	entry, err := s.Get(ctx, "config/sts/"+accountID)
 	if err != nil {
 		return nil, err
@@ -136,7 +136,7 @@ func (b *backend) nonLockedAwsStsEntry(ctx context.Context, s logical.Storage, a
 	if entry == nil {
 		return nil, nil
 	}
-	var stsEntry awsStsEntry
+	var stsEntry alibabaSTSEntry
 	if err := entry.DecodeJSON(&stsEntry); err != nil {
 		return nil, err
 	}
@@ -146,7 +146,7 @@ func (b *backend) nonLockedAwsStsEntry(ctx context.Context, s logical.Storage, a
 
 // lockedAwsStsEntry returns the STS role associated with the given accountID.
 // This method acquires the read lock before returning the association.
-func (b *backend) lockedAwsStsEntry(ctx context.Context, s logical.Storage, accountID string) (*awsStsEntry, error) {
+func (b *backend) lockedAwsStsEntry(ctx context.Context, s logical.Storage, accountID string) (*alibabaSTSEntry, error) {
 	b.configMutex.RLock()
 	defer b.configMutex.RUnlock()
 
@@ -191,7 +191,7 @@ func (b *backend) pathConfigStsCreateUpdate(ctx context.Context, req *logical.Re
 		return nil, err
 	}
 	if stsEntry == nil {
-		stsEntry = &awsStsEntry{}
+		stsEntry = &alibabaSTSEntry{}
 	}
 
 	// Check that an STS role has actually been provided

@@ -3,7 +3,6 @@ package alibaba
 import (
 	"context"
 
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 )
@@ -24,33 +23,11 @@ func pathConfigClient(b *backend) *framework.Path {
 				Description: "AWS Secret Access Key for the account used to make AWS API requests.",
 			},
 
-			"endpoint": {
+			// TODO does this really belong here statically or should it be more dynamic? Maybe the role? Maybe something ephemeral?
+			"instance_identity_audience": {
 				Type:        framework.TypeString,
 				Default:     "",
-				Description: "URL to override the default generated endpoint for making AWS EC2 API calls.",
-			},
-
-			"iam_endpoint": {
-				Type:        framework.TypeString,
-				Default:     "",
-				Description: "URL to override the default generated endpoint for making AWS IAM API calls.",
-			},
-
-			"sts_endpoint": {
-				Type:        framework.TypeString,
-				Default:     "",
-				Description: "URL to override the default generated endpoint for making AWS STS API calls.",
-			},
-
-			"iam_server_id_header_value": {
-				Type:        framework.TypeString,
-				Default:     "",
-				Description: "Value to require in the X-Vault-AWS-IAM-Server-ID request header",
-			},
-			"max_retries": {
-				Type:        framework.TypeInt,
-				Default:     aws.UseServiceDefaultRetries,
-				Description: "Maximum number of retries for recoverable exceptions of AWS APIs",
+				Description: `Value to require as the "audience", see https://www.alibabacloud.com/help/doc-detail/67254.htm for more.`,
 			},
 		},
 
@@ -116,11 +93,7 @@ func (b *backend) pathConfigClientRead(ctx context.Context, req *logical.Request
 	return &logical.Response{
 		Data: map[string]interface{}{
 			"access_key":                 clientConfig.AccessKey,
-			"endpoint":                   clientConfig.Endpoint,
-			"iam_endpoint":               clientConfig.IAMEndpoint,
-			"sts_endpoint":               clientConfig.STSEndpoint,
-			"iam_server_id_header_value": clientConfig.IAMServerIdHeaderValue,
-			"max_retries":                clientConfig.MaxRetries,
+			"instance_identity_audience": clientConfig.InstanceIdentityAudience,
 		},
 	}, nil
 }
@@ -133,11 +106,7 @@ func (b *backend) pathConfigClientDelete(ctx context.Context, req *logical.Reque
 		return nil, err
 	}
 
-	// Remove all the cached EC2 client objects in the backend.
-	b.flushCachedEC2Clients()
-
-	// Remove all the cached EC2 client objects in the backend.
-	b.flushCachedIAMClients()
+	// TODO if you end up caching clients again, you should go back to flushing them here
 
 	// unset the cached default AWS account ID
 	b.defaultAWSAccountID = ""
@@ -186,57 +155,15 @@ func (b *backend) pathConfigClientCreateUpdate(ctx context.Context, req *logical
 		configEntry.SecretKey = data.Get("secret_key").(string)
 	}
 
-	endpointStr, ok := data.GetOk("endpoint")
+	headerValStr, ok := data.GetOk("instance_identity_audience")
 	if ok {
-		if configEntry.Endpoint != endpointStr.(string) {
-			changedCreds = true
-			configEntry.Endpoint = endpointStr.(string)
-		}
-	} else if req.Operation == logical.CreateOperation {
-		configEntry.Endpoint = data.Get("endpoint").(string)
-	}
-
-	iamEndpointStr, ok := data.GetOk("iam_endpoint")
-	if ok {
-		if configEntry.IAMEndpoint != iamEndpointStr.(string) {
-			changedCreds = true
-			configEntry.IAMEndpoint = iamEndpointStr.(string)
-		}
-	} else if req.Operation == logical.CreateOperation {
-		configEntry.IAMEndpoint = data.Get("iam_endpoint").(string)
-	}
-
-	stsEndpointStr, ok := data.GetOk("sts_endpoint")
-	if ok {
-		if configEntry.STSEndpoint != stsEndpointStr.(string) {
-			// We don't directly cache STS clients as they are ever directly used.
-			// However, they are potentially indirectly used as credential providers
-			// for the EC2 and IAM clients, and thus we would be indirectly caching
-			// them there. So, if we change the STS endpoint, we should flush those
-			// cached clients.
-			changedCreds = true
-			configEntry.STSEndpoint = stsEndpointStr.(string)
-		}
-	} else if req.Operation == logical.CreateOperation {
-		configEntry.STSEndpoint = data.Get("sts_endpoint").(string)
-	}
-
-	headerValStr, ok := data.GetOk("iam_server_id_header_value")
-	if ok {
-		if configEntry.IAMServerIdHeaderValue != headerValStr.(string) {
+		if configEntry.InstanceIdentityAudience != headerValStr.(string) {
 			// NOT setting changedCreds here, since this isn't really cached
-			configEntry.IAMServerIdHeaderValue = headerValStr.(string)
+			configEntry.InstanceIdentityAudience = headerValStr.(string)
 			changedOtherConfig = true
 		}
 	} else if req.Operation == logical.CreateOperation {
-		configEntry.IAMServerIdHeaderValue = data.Get("iam_server_id_header_value").(string)
-	}
-
-	maxRetriesInt, ok := data.GetOk("max_retries")
-	if ok {
-		configEntry.MaxRetries = maxRetriesInt.(int)
-	} else if req.Operation == logical.CreateOperation {
-		configEntry.MaxRetries = data.Get("max_retries").(int)
+		configEntry.InstanceIdentityAudience = data.Get("instance_identity_audience").(string)
 	}
 
 	// Since this endpoint supports both create operation and update operation,
@@ -256,8 +183,7 @@ func (b *backend) pathConfigClientCreateUpdate(ctx context.Context, req *logical
 	}
 
 	if changedCreds {
-		b.flushCachedEC2Clients()
-		b.flushCachedIAMClients()
+		// TODO if you end up caching clients again, flush them here
 		b.defaultAWSAccountID = ""
 	}
 
@@ -266,14 +192,12 @@ func (b *backend) pathConfigClientCreateUpdate(ctx context.Context, req *logical
 
 // Struct to hold 'aws_access_key' and 'aws_secret_key' that are required to
 // interact with the AWS EC2 API.
+// TODO add config params for the client config that you _can_ set, embed that config obj directly here if it's jsonable
 type clientConfig struct {
-	AccessKey              string `json:"access_key"`
-	SecretKey              string `json:"secret_key"`
-	Endpoint               string `json:"endpoint"`
-	IAMEndpoint            string `json:"iam_endpoint"`
-	STSEndpoint            string `json:"sts_endpoint"`
-	IAMServerIdHeaderValue string `json:"iam_server_id_header_value"`
-	MaxRetries             int    `json:"max_retries"`
+	AccessKey string `json:"access_key"`
+	SecretKey string `json:"secret_key"`
+	// TODO I don't thing this is being used correctly in practice since it's no longer a header
+	InstanceIdentityAudience string `json:"instance_identity_audience"`
 }
 
 const pathConfigClientHelpSyn = `

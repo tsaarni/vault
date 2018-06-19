@@ -1,5 +1,8 @@
 package alibaba
 
+/*
+TODO get this working?
+
 import (
 	"encoding/base64"
 	"encoding/json"
@@ -7,15 +10,14 @@ import (
 	"io/ioutil"
 	"strings"
 
-	"github.com/hashicorp/errwrap"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/sts"
 	"github.com/hashicorp/vault/api"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/session"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/service/sts"
 	"github.com/hashicorp/vault/helper/alibabautil"
 )
 
 type CLIHandler struct{}
+
+
 
 // Generates the necessary data to send to the Vault server for generating a token
 // This is useful for other API clients to use
@@ -27,39 +29,19 @@ func GenerateLoginData(accessKey, secretKey, sessionToken, headerValue string) (
 		SecretKey:    secretKey,
 		SessionToken: sessionToken,
 	}
-	creds, err := credConfig.GenerateCredentialChain()
-	if err != nil {
-		return nil, err
-	}
-	if creds == nil {
-		return nil, fmt.Errorf("could not compile valid credential providers from static config, environment, shared, or instance metadata")
-	}
-
-	_, err = creds.Get()
-	if err != nil {
-		return nil, errwrap.Wrapf("failed to retrieve credentials from credential chain: {{err}}", err)
-	}
+	creds := credConfig.GenerateCredentialChain()
 
 	// Use the credentials we've found to construct an STS session
-	stsSession, err := session.NewSessionWithOptions(session.Options{
-		Config: aws.Config{Credentials: creds},
-	})
+	svc, err := sts.NewClientWithAccessKey("region-id", creds.AccessKeyId, creds.AccessKeySecret)
 	if err != nil {
 		return nil, err
 	}
 
-	var params *sts.GetCallerIdentityInput
-	svc, err := sts.New(stsSession)
+	var params *sts.GetCallerIdentityRequest
+	stsRequest, err := svc.GetCallerIdentity(params)
 	if err != nil {
 		return nil, err
 	}
-	stsRequest, _ := svc.GetCallerIdentityRequest(params)
-
-	// Inject the required auth header value, if supplied, and then sign the request including that header
-	if headerValue != "" {
-		stsRequest.HTTPRequest.Header.Add(iamServerIdHeader, headerValue)
-	}
-	stsRequest.Sign()
 
 	// Now extract out the relevant parts of the request
 	headersJson, err := json.Marshal(stsRequest.HTTPRequest.Header)
@@ -165,3 +147,4 @@ Configuration:
 
 	return strings.TrimSpace(help)
 }
+*/

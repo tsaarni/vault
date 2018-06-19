@@ -17,13 +17,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/ram"
 	"github.com/fullsailor/pkcs7"
 	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/go-cleanhttp"
 	"github.com/hashicorp/go-uuid"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/service/ec2"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/service/iam"
 	"github.com/hashicorp/vault/helper/jsonutil"
 	"github.com/hashicorp/vault/helper/strutil"
 	"github.com/hashicorp/vault/logical"
@@ -52,13 +51,13 @@ If a matching role is not found, login fails.`,
 			"pkcs7": {
 				Type: framework.TypeString,
 				Description: `PKCS7 signature of the identity document when using an auth_type
-of ec2.`,
+of ecs.`,
 			},
 
 			"nonce": {
 				Type: framework.TypeString,
 				Description: `The nonce to be used for subsequent login requests when
-auth_type is ec2.  If this parameter is not specified at
+auth_type is ecs.  If this parameter is not specified at
 all and if reauthentication is allowed, then the backend will generate a random
 nonce, attaches it to the instance's identity-whitelist entry and returns the
 nonce back as part of auth metadata.  This value should be used with further
@@ -73,7 +72,7 @@ significance.`,
 			"iam_http_request_method": {
 				Type: framework.TypeString,
 				Description: `HTTP method to use for the AWS request when auth_type is
-iam. This must match what has been signed in the
+ram. This must match what has been signed in the
 presigned request. Currently, POST is the only supported value`,
 			},
 
@@ -85,13 +84,13 @@ when using iam auth_type.`,
 
 			"iam_request_body": {
 				Type: framework.TypeString,
-				Description: `Base64-encoded request body when auth_type is iam.
+				Description: `Base64-encoded request body when auth_type is ram.
 This must match the request body included in the signature.`,
 			},
 			"iam_request_headers": {
 				Type: framework.TypeString,
 				Description: `Base64-encoded JSON representation of the request headers when auth_type is
-iam. This must at a minimum include the headers over
+ram. This must at a minimum include the headers over
 which AWS has included a signature.`,
 			},
 			"identity": {
@@ -118,54 +117,17 @@ needs to be supplied along with 'identity' parameter.`,
 	}
 }
 
-// instanceIamRoleARN fetches the IAM role ARN associated with the given
-// instance profile name
-func (b *backend) instanceIamRoleARN(iamClient *iam.IAM, instanceProfileName string) (string, error) {
-	if iamClient == nil {
-		return "", fmt.Errorf("nil iamClient")
-	}
-	if instanceProfileName == "" {
-		return "", fmt.Errorf("missing instance profile name")
-	}
-
-	profile, err := iamClient.GetInstanceProfile(&iam.GetInstanceProfileInput{
-		InstanceProfileName: aws.String(instanceProfileName),
-	})
-	if err != nil {
-		return "", err
-	}
-	if profile == nil {
-		return "", fmt.Errorf("nil output while getting instance profile details")
-	}
-
-	if profile.InstanceProfile == nil {
-		return "", fmt.Errorf("nil instance profile in the output of instance profile details")
-	}
-
-	if profile.InstanceProfile.Roles == nil || len(profile.InstanceProfile.Roles) != 1 {
-		return "", fmt.Errorf("invalid roles in the output of instance profile details")
-	}
-
-	if profile.InstanceProfile.Roles[0].Arn == nil {
-		return "", fmt.Errorf("nil role ARN in the output of instance profile details")
-	}
-
-	return *profile.InstanceProfile.Roles[0].Arn, nil
-}
-
 // validateInstance queries the status of the EC2 instance using AWS EC2 API
 // and checks if the instance is running and is healthy
-func (b *backend) validateInstance(ctx context.Context, s logical.Storage, instanceID, region, accountID string) (*ec2.Instance, error) {
+func (b *backend) validateInstance(ctx context.Context, s logical.Storage, instanceID, region, accountID string) (*ecs.Instance, error) {
 	// Create an EC2 client to pull the instance information
-	ec2Client, err := b.clientEC2(ctx, s, region, accountID)
+	ec2Client, err := b.getECSClient(ctx, s, region)
 	if err != nil {
 		return nil, err
 	}
 
-	status, err := ec2Client.DescribeInstances(&ec2.DescribeInstancesInput{
-		InstanceIds: []*string{
-			aws.String(instanceID),
-		},
+	status, err := ec2Client.DescribeInstances(&ecs.DescribeInstancesRequest{
+		InstanceIds: instanceID,
 	})
 	if err != nil {
 		return nil, errwrap.Wrapf(fmt.Sprintf("error fetching description for instance ID %q: {{err}}", instanceID), err)
@@ -173,23 +135,25 @@ func (b *backend) validateInstance(ctx context.Context, s logical.Storage, insta
 	if status == nil {
 		return nil, fmt.Errorf("nil output from describe instances")
 	}
-	if len(status.Reservations) == 0 {
+
+	// TODO test this a lot
+	if len(status.Instances.Instance) == 0 {
 		return nil, fmt.Errorf("no reservations found in instance description")
 
 	}
-	if len(status.Reservations[0].Instances) == 0 {
+	if len(status.Instances.Instance) == 0 {
 		return nil, fmt.Errorf("no instance details found in reservations")
 	}
-	if *status.Reservations[0].Instances[0].InstanceId != instanceID {
+	if status.Instances.Instance[0].InstanceId != instanceID {
 		return nil, fmt.Errorf("expected instance ID not matching the instance ID in the instance description")
 	}
-	if status.Reservations[0].Instances[0].State == nil {
+	if status.Instances.Instance[0].Status == "" {
 		return nil, fmt.Errorf("instance state in instance description is nil")
 	}
-	if *status.Reservations[0].Instances[0].State.Name != "running" {
+	if status.Instances.Instance[0].Status != "running" {
 		return nil, fmt.Errorf("instance is not in 'running' state")
 	}
-	return status.Reservations[0].Instances[0], nil
+	return &status.Instances.Instance[0], nil
 }
 
 // validateMetadata matches the given client nonce and pending time with the
@@ -271,25 +235,17 @@ func (b *backend) verifyInstanceIdentitySignature(ctx context.Context, s logical
 	// certificate and all the registered certificates via
 	// 'config/certificate/<cert_name>' endpoint, for verifying the RSA
 	// digest.
-	publicCerts, err := b.awsPublicCertificates(ctx, s, false)
+	cert, err := b.alibabaPublicCertificate()
 	if err != nil {
 		return nil, err
 	}
-	if publicCerts == nil || len(publicCerts) == 0 {
-		return nil, fmt.Errorf("certificates to verify the signature are not found")
-	}
 
-	// Check if any of the certs registered at the backend can verify the
-	// signature
-	for _, cert := range publicCerts {
-		err := cert.CheckSignature(x509.SHA256WithRSA, identityBytes, signatureBytes)
-		if err == nil {
-			var identityDoc identityDocument
-			if decErr := jsonutil.DecodeJSON(identityBytes, &identityDoc); decErr != nil {
-				return nil, decErr
-			}
-			return &identityDoc, nil
+	if err := cert.CheckSignature(x509.SHA256WithRSA, identityBytes, signatureBytes); err != nil {
+		var identityDoc identityDocument
+		if decErr := jsonutil.DecodeJSON(identityBytes, &identityDoc); decErr != nil {
+			return nil, decErr
 		}
+		return &identityDoc, nil
 	}
 
 	return nil, fmt.Errorf("instance identity verification using SHA256 RSA signature is unsuccessful")
@@ -314,20 +270,14 @@ func (b *backend) parseIdentityDocument(ctx context.Context, s logical.Storage, 
 		return nil, errwrap.Wrapf("failed to parse the BER encoded PKCS#7 signature: {{err}}", err)
 	}
 
-	// Get the public certificates that are used to verify the signature.
-	// This returns a slice of certificates containing the default certificate
-	// and all the registered certificates via 'config/certificate/<cert_name>' endpoint
-	publicCerts, err := b.awsPublicCertificates(ctx, s, true)
+	cert, err := b.alibabaPublicCertificate()
 	if err != nil {
 		return nil, err
-	}
-	if publicCerts == nil || len(publicCerts) == 0 {
-		return nil, fmt.Errorf("certificates to verify the signature are not found")
 	}
 
 	// Before calling Verify() on the PKCS#7 struct, set the certificates to be used
 	// to verify the contents in the signer information.
-	pkcs7Data.Certificates = publicCerts
+	pkcs7Data.Certificates = []*x509.Certificate{cert}
 
 	// Verify extracts the authenticated attributes in the PKCS#7 signature, and verifies
 	// the authenticity of the content using 'dsa.PublicKey' embedded in the public certificate.
@@ -374,7 +324,7 @@ func (b *backend) pathLoginUpdate(ctx context.Context, req *logical.Request, dat
 // The second error return value indicates whether there's an error in even
 // trying to validate those requirements
 func (b *backend) verifyInstanceMeetsRoleRequirements(ctx context.Context,
-	s logical.Storage, instance *ec2.Instance, roleEntry *awsRoleEntry, roleName string, identityDoc *identityDocument) (error, error) {
+	s logical.Storage, instance *ecs.Instance, roleEntry *awsRoleEntry, roleName string, identityDoc *identityDocument) (error, error) {
 
 	switch {
 	case instance == nil:
@@ -386,8 +336,8 @@ func (b *backend) verifyInstanceMeetsRoleRequirements(ctx context.Context,
 	}
 
 	// Verify that the instance ID matches one of the ones set by the role
-	if len(roleEntry.BoundEc2InstanceIDs) > 0 && !strutil.StrListContains(roleEntry.BoundEc2InstanceIDs, *instance.InstanceId) {
-		return fmt.Errorf("instance ID %q does not belong to the role %q", *instance.InstanceId, roleName), nil
+	if len(roleEntry.BoundEc2InstanceIDs) > 0 && !strutil.StrListContains(roleEntry.BoundEc2InstanceIDs, instance.InstanceId) {
+		return fmt.Errorf("instance ID %q does not belong to the role %q", instance.InstanceId, roleName), nil
 	}
 
 	// Verify that the AccountID of the instance trying to login matches the
@@ -404,131 +354,140 @@ func (b *backend) verifyInstanceMeetsRoleRequirements(ctx context.Context,
 	// This means we require an EC2 API call to retrieve the AMI ID, but we're
 	// already calling the API to validate the Instance ID anyway, so it shouldn't
 	// matter. The benefit is that we have the exact same code whether auth_type
-	// is ec2 or iam.
+	// is ec2 or ram.
 	if len(roleEntry.BoundAmiIDs) > 0 {
-		if instance.ImageId == nil {
+		if instance.ImageId == "" {
 			return nil, fmt.Errorf("AMI ID in the instance description is nil")
 		}
-		if !strutil.StrListContains(roleEntry.BoundAmiIDs, *instance.ImageId) {
+		if !strutil.StrListContains(roleEntry.BoundAmiIDs, instance.ImageId) {
 			return fmt.Errorf("AMI ID %q does not belong to role %q", instance.ImageId, roleName), nil
 		}
 	}
 
-	// Validate the SubnetID if corresponding bound was set on the role
-	if len(roleEntry.BoundSubnetIDs) > 0 {
-		if instance.SubnetId == nil {
-			return nil, fmt.Errorf("subnet ID in the instance description is nil")
+	/*
+		TODO I didn't see this anywhere but I could just be missing it
+		// Validate the SubnetID if corresponding bound was set on the role
+		if len(roleEntry.BoundSubnetIDs) > 0 {
+			if instance.SubnetId == nil {
+				return nil, fmt.Errorf("subnet ID in the instance description is nil")
+			}
+			if !strutil.StrListContains(roleEntry.BoundSubnetIDs, *instance.SubnetId) {
+				return fmt.Errorf("subnet ID %q does not satisfy the constraint on role %q", *instance.SubnetId, roleName), nil
+			}
 		}
-		if !strutil.StrListContains(roleEntry.BoundSubnetIDs, *instance.SubnetId) {
-			return fmt.Errorf("subnet ID %q does not satisfy the constraint on role %q", *instance.SubnetId, roleName), nil
-		}
-	}
+	*/
 
 	// Validate the VpcID if corresponding bound was set on the role
 	if len(roleEntry.BoundVpcIDs) > 0 {
-		if instance.VpcId == nil {
+		if instance.VpcAttributes.VpcId == "" {
 			return nil, fmt.Errorf("VPC ID in the instance description is nil")
 		}
-		if !strutil.StrListContains(roleEntry.BoundVpcIDs, *instance.VpcId) {
-			return fmt.Errorf("VPC ID %q does not satisfy the constraint on role %q", *instance.VpcId, roleName), nil
+		if !strutil.StrListContains(roleEntry.BoundVpcIDs, instance.VpcAttributes.VpcId) {
+			return fmt.Errorf("VPC ID %q does not satisfy the constraint on role %q", instance.VpcAttributes.VpcId, roleName), nil
 		}
 	}
 
-	// Check if the IAM instance profile ARN of the instance trying to
-	// login, matches the IAM instance profile ARN specified as a constraint
-	// on the role
-	if len(roleEntry.BoundIamInstanceProfileARNs) > 0 {
-		if instance.IamInstanceProfile == nil {
-			return nil, fmt.Errorf("IAM instance profile in the instance description is nil")
-		}
-		if instance.IamInstanceProfile.Arn == nil {
-			return nil, fmt.Errorf("IAM instance profile ARN in the instance description is nil")
-		}
-		iamInstanceProfileARN := *instance.IamInstanceProfile.Arn
-		matchesInstanceProfile := false
-		// NOTE: Can't use strutil.StrListContainsGlob. A * is a perfectly valid character in the "path" component
-		// of an ARN. See, e.g., https://docs.aws.amazon.com/IAM/latest/APIReference/API_CreateInstanceProfile.html :
-		// The path allows strings "containing any ASCII character from the ! (\u0021) thru the DEL character
-		// (\u007F), including most punctuation characters, digits, and upper and lowercased letters."
-		// So, e.g., arn:aws:iam::123456789012:instance-profile/Some*Path/MyProfileName is a perfectly valid instance
-		// profile ARN, and it wouldn't be correct to expand the * in the middle as a wildcard.
-		// If a user wants to match an IAM instance profile arn beginning with arn:aws:iam::123456789012:instance-profile/foo*
-		// then bound_iam_instance_profile_arn would need to be arn:aws:iam::123456789012:instance-profile/foo**
-		// Wanting to exactly match an ARN that has a * at the end is not a valid use case. The * is only valid in the
-		// path; it's not valid in the name. That means no valid ARN can ever end with a *. For example,
-		// arn:aws:iam::123456789012:instance-profile/Foo* is NOT valid as an instance profile ARN, so no valid instance
-		// profile ARN could ever equal that value.
-		for _, boundInstanceProfileARN := range roleEntry.BoundIamInstanceProfileARNs {
-			switch {
-			case strings.HasSuffix(boundInstanceProfileARN, "*") && strings.HasPrefix(iamInstanceProfileARN, boundInstanceProfileARN[:len(boundInstanceProfileARN)-1]):
-				matchesInstanceProfile = true
-				break
-			case iamInstanceProfileARN == boundInstanceProfileARN:
-				matchesInstanceProfile = true
-				break
+	/*
+		TODO this is simply not available
+		// Check if the IAM instance profile ARN of the instance trying to
+		// login, matches the IAM instance profile ARN specified as a constraint
+		// on the role
+		if len(roleEntry.BoundIamInstanceProfileARNs) > 0 {
+			if instance.IamInstanceProfile == nil {
+				return nil, fmt.Errorf("IAM instance profile in the instance description is nil")
+			}
+			if instance.IamInstanceProfile.Arn == nil {
+				return nil, fmt.Errorf("IAM instance profile ARN in the instance description is nil")
+			}
+			iamInstanceProfileARN := *instance.IamInstanceProfile.Arn
+			matchesInstanceProfile := false
+			// NOTE: Can't use strutil.StrListContainsGlob. A * is a perfectly valid character in the "path" component
+			// of an ARN. See, e.g., https://docs.aws.amazon.com/IAM/latest/APIReference/API_CreateInstanceProfile.html :
+			// The path allows strings "containing any ASCII character from the ! (\u0021) thru the DEL character
+			// (\u007F), including most punctuation characters, digits, and upper and lowercased letters."
+			// So, e.g., arn:aws:iam::123456789012:instance-profile/Some*Path/MyProfileName is a perfectly valid instance
+			// profile ARN, and it wouldn't be correct to expand the * in the middle as a wildcard.
+			// If a user wants to match an IAM instance profile arn beginning with arn:aws:iam::123456789012:instance-profile/foo*
+			// then bound_iam_instance_profile_arn would need to be arn:aws:iam::123456789012:instance-profile/foo**
+			// Wanting to exactly match an ARN that has a * at the end is not a valid use case. The * is only valid in the
+			// path; it's not valid in the name. That means no valid ARN can ever end with a *. For example,
+			// arn:aws:iam::123456789012:instance-profile/Foo* is NOT valid as an instance profile ARN, so no valid instance
+			// profile ARN could ever equal that value.
+			for _, boundInstanceProfileARN := range roleEntry.BoundIamInstanceProfileARNs {
+				switch {
+				case strings.HasSuffix(boundInstanceProfileARN, "*") && strings.HasPrefix(iamInstanceProfileARN, boundInstanceProfileARN[:len(boundInstanceProfileARN)-1]):
+					matchesInstanceProfile = true
+					break
+				case iamInstanceProfileARN == boundInstanceProfileARN:
+					matchesInstanceProfile = true
+					break
+				}
+			}
+			if !matchesInstanceProfile {
+				return fmt.Errorf("IAM instance profile ARN %q does not satisfy the constraint role %q", iamInstanceProfileARN, roleName), nil
 			}
 		}
-		if !matchesInstanceProfile {
-			return fmt.Errorf("IAM instance profile ARN %q does not satisfy the constraint role %q", iamInstanceProfileARN, roleName), nil
-		}
-	}
+	*/
 
-	// Check if the IAM role ARN of the instance trying to login, matches
-	// the IAM role ARN specified as a constraint on the role.
-	if len(roleEntry.BoundIamRoleARNs) > 0 {
-		if instance.IamInstanceProfile == nil {
-			return nil, fmt.Errorf("IAM instance profile in the instance description is nil")
-		}
-		if instance.IamInstanceProfile.Arn == nil {
-			return nil, fmt.Errorf("IAM instance profile ARN in the instance description is nil")
-		}
+	/*
+		TODO this is also simply not available
+		// Check if the IAM role ARN of the instance trying to login, matches
+		// the IAM role ARN specified as a constraint on the role.
+		if len(roleEntry.BoundIamRoleARNs) > 0 {
+			if instance.IamInstanceProfile == nil {
+				return nil, fmt.Errorf("IAM instance profile in the instance description is nil")
+			}
+			if instance.IamInstanceProfile.Arn == nil {
+				return nil, fmt.Errorf("IAM instance profile ARN in the instance description is nil")
+			}
 
-		// Fetch the instance profile ARN from the instance description
-		iamInstanceProfileARN := *instance.IamInstanceProfile.Arn
+			// Fetch the instance profile ARN from the instance description
+			iamInstanceProfileARN := *instance.IamInstanceProfile.Arn
 
-		if iamInstanceProfileARN == "" {
-			return nil, fmt.Errorf("IAM instance profile ARN in the instance description is empty")
-		}
+			if iamInstanceProfileARN == "" {
+				return nil, fmt.Errorf("IAM instance profile ARN in the instance description is empty")
+			}
 
-		// Extract out the instance profile name from the instance
-		// profile ARN
-		iamInstanceProfileEntity, err := parseRamArn(iamInstanceProfileARN)
+			// Extract out the instance profile name from the instance
+			// profile ARN
+			iamInstanceProfileEntity, err := parseRamArn(iamInstanceProfileARN)
 
-		if err != nil {
-			return nil, errwrap.Wrapf(fmt.Sprintf("failed to parse IAM instance profile ARN %q: {{err}}", iamInstanceProfileARN), err)
-		}
+			if err != nil {
+				return nil, errwrap.Wrapf(fmt.Sprintf("failed to parse IAM instance profile ARN %q: {{err}}", iamInstanceProfileARN), err)
+			}
 
-		// Use instance profile ARN to fetch the associated role ARN
-		iamClient, err := b.clientIAM(ctx, s, identityDoc.Region, identityDoc.AccountID)
-		if err != nil {
-			return nil, errwrap.Wrapf("could not fetch IAM client: {{err}}", err)
-		} else if iamClient == nil {
-			return nil, fmt.Errorf("received a nil iamClient")
-		}
-		iamRoleARN, err := b.instanceIamRoleARN(iamClient, iamInstanceProfileEntity.FriendlyName)
-		if err != nil {
-			return nil, errwrap.Wrapf("IAM role ARN could not be fetched: {{err}}", err)
-		}
-		if iamRoleARN == "" {
-			return nil, fmt.Errorf("IAM role ARN could not be fetched")
-		}
+			// Use instance profile ARN to fetch the associated role ARN
+			iamClient, err := b.clientIAM(ctx, s, identityDoc.Region, identityDoc.AccountID)
+			if err != nil {
+				return nil, errwrap.Wrapf("could not fetch IAM client: {{err}}", err)
+			} else if iamClient == nil {
+				return nil, fmt.Errorf("received a nil iamClient")
+			}
+			iamRoleARN, err := b.instanceIamRoleARN(iamClient, iamInstanceProfileEntity.FriendlyName)
+			if err != nil {
+				return nil, errwrap.Wrapf("IAM role ARN could not be fetched: {{err}}", err)
+			}
+			if iamRoleARN == "" {
+				return nil, fmt.Errorf("IAM role ARN could not be fetched")
+			}
 
-		matchesInstanceRoleARN := false
-		for _, boundIamRoleARN := range roleEntry.BoundIamRoleARNs {
-			switch {
-			// as with boundInstanceProfileARN, can't use strutil.StrListContainsGlob because * can validly exist in the middle of an ARN
-			case strings.HasSuffix(boundIamRoleARN, "*") && strings.HasPrefix(iamRoleARN, boundIamRoleARN[:len(boundIamRoleARN)-1]):
-				matchesInstanceRoleARN = true
-				break
-			case iamRoleARN == boundIamRoleARN:
-				matchesInstanceRoleARN = true
-				break
+			matchesInstanceRoleARN := false
+			for _, boundIamRoleARN := range roleEntry.BoundIamRoleARNs {
+				switch {
+				// as with boundInstanceProfileARN, can't use strutil.StrListContainsGlob because * can validly exist in the middle of an ARN
+				case strings.HasSuffix(boundIamRoleARN, "*") && strings.HasPrefix(iamRoleARN, boundIamRoleARN[:len(boundIamRoleARN)-1]):
+					matchesInstanceRoleARN = true
+					break
+				case iamRoleARN == boundIamRoleARN:
+					matchesInstanceRoleARN = true
+					break
+				}
+			}
+			if !matchesInstanceRoleARN {
+				return fmt.Errorf("IAM role ARN %q does not satisfy the constraint role %q", iamRoleARN, roleName), nil
 			}
 		}
-		if !matchesInstanceRoleARN {
-			return fmt.Errorf("IAM role ARN %q does not satisfy the constraint role %q", iamRoleARN, roleName), nil
-		}
-	}
+	*/
 
 	return nil, nil
 }
@@ -834,7 +793,7 @@ func (b *backend) pathLoginUpdateEc2(ctx context.Context, req *logical.Request, 
 // handleRoleTagLogin is used to fetch the role tag of the instance and
 // verifies it to be correct.  Then the policies for the login request will be
 // set off of the role tag, if certain criteria satisfies.
-func (b *backend) handleRoleTagLogin(ctx context.Context, s logical.Storage, roleName string, roleEntry *awsRoleEntry, instance *ec2.Instance) (*roleTagLoginResponse, error) {
+func (b *backend) handleRoleTagLogin(ctx context.Context, s logical.Storage, roleName string, roleEntry *awsRoleEntry, instance *ecs.Instance) (*roleTagLoginResponse, error) {
 	if roleEntry == nil {
 		return nil, fmt.Errorf("nil role entry")
 	}
@@ -844,8 +803,8 @@ func (b *backend) handleRoleTagLogin(ctx context.Context, s logical.Storage, rol
 
 	// Input validation on instance is not performed here considering
 	// that it would have been done in validateInstance method.
-	tags := instance.Tags
-	if tags == nil || len(tags) == 0 {
+	tags := instance.Tags.Tag
+	if len(tags) == 0 {
 		return nil, fmt.Errorf("missing tag with key %q on the instance", roleEntry.RoleTag)
 	}
 
@@ -853,8 +812,8 @@ func (b *backend) handleRoleTagLogin(ctx context.Context, s logical.Storage, rol
 	// a tag with its 'key' matching the expected role tag value.
 	rTagValue := ""
 	for _, tagItem := range tags {
-		if tagItem.Key != nil && *tagItem.Key == roleEntry.RoleTag {
-			rTagValue = *tagItem.Value
+		if tagItem.TagKey == roleEntry.RoleTag {
+			rTagValue = tagItem.TagValue
 			break
 		}
 	}
@@ -878,7 +837,7 @@ func (b *backend) handleRoleTagLogin(ctx context.Context, s logical.Storage, rol
 	}
 
 	// If instance_id was set on the role tag, check if the same instance is attempting to login
-	if rTag.InstanceID != "" && rTag.InstanceID != *instance.InstanceId {
+	if rTag.InstanceID != "" && rTag.InstanceID != instance.InstanceId {
 		return nil, fmt.Errorf("role tag is being used by an unauthorized instance")
 	}
 
@@ -967,56 +926,59 @@ func (b *backend) pathLoginRenewIam(ctx context.Context, req *logical.Request, d
 		}
 	}
 
-	// Note that the error messages below can leak a little bit of information about the role information
-	// For example, if on renew, the client gets the "error parsing ARN..." error message, the client
-	// will know that it's a wildcard bind (but not the actual bind), even if the client can't actually
-	// read the role directly to know what the bind is. It's a relatively small amount of leakage, in
-	// some fairly corner cases, and in the most likely error case (role has been changed to a new ARN),
-	// the error message is identical.
-	if len(roleEntry.BoundIamPrincipalARNs) > 0 {
-		// We might not get here if all bindings were on the inferred entity, which we've already validated
-		// above
-		// As with logins, there are three ways to pass this check:
-		// 1: clientUserId is in roleEntry.BoundIamPrincipalIDs (entries in roleEntry.BoundIamPrincipalIDs
-		//    implies that roleEntry.ResolveAWSUniqueIDs is true)
-		// 2: roleEntry.ResolveAWSUniqueIDs is false and canonical_arn is in roleEntry.BoundIamPrincipalARNs
-		// 3: Full ARN matches one of the wildcard globs in roleEntry.BoundIamPrincipalARNs
-		clientUserId, ok := req.Auth.Metadata["client_user_id"]
-		switch {
-		case ok && strutil.StrListContains(roleEntry.BoundIamPrincipalIDs, clientUserId): // check 1 passed
-		case !roleEntry.ResolveAWSUniqueIDs && strutil.StrListContains(roleEntry.BoundIamPrincipalARNs, canonicalArn): // check 2 passed
-		default:
-			// check 3 is a bit more complex, so we do it last
-			fullArn := b.getCachedUserId(clientUserId)
-			if fullArn == "" {
-				entity, err := parseRamArn(canonicalArn)
-				if err != nil {
-					return nil, errwrap.Wrapf(fmt.Sprintf("error parsing ARN %q: {{err}}", canonicalArn), err)
-				}
-				fullArn, err = b.fullArn(ctx, entity, req.Storage)
-				if err != nil {
-					return nil, errwrap.Wrapf(fmt.Sprintf("error looking up full ARN of entity %v: {{err}}", entity), err)
-				}
+	/*
+		TODO can we support this when it comes to regions?
+
+		// Note that the error messages below can leak a little bit of information about the role information
+		// For example, if on renew, the client gets the "error parsing ARN..." error message, the client
+		// will know that it's a wildcard bind (but not the actual bind), even if the client can't actually
+		// read the role directly to know what the bind is. It's a relatively small amount of leakage, in
+		// some fairly corner cases, and in the most likely error case (role has been changed to a new ARN),
+		// the error message is identical.
+		if len(roleEntry.BoundIamPrincipalARNs) > 0 {
+			// We might not get here if all bindings were on the inferred entity, which we've already validated
+			// above
+			// As with logins, there are three ways to pass this check:
+			// 1: clientUserId is in roleEntry.BoundIamPrincipalIDs (entries in roleEntry.BoundIamPrincipalIDs
+			//    implies that roleEntry.ResolveAWSUniqueIDs is true)
+			// 2: roleEntry.ResolveAWSUniqueIDs is false and canonical_arn is in roleEntry.BoundIamPrincipalARNs
+			// 3: Full ARN matches one of the wildcard globs in roleEntry.BoundIamPrincipalARNs
+			clientUserId, ok := req.Auth.Metadata["client_user_id"]
+			switch {
+			case ok && strutil.StrListContains(roleEntry.BoundIamPrincipalIDs, clientUserId): // check 1 passed
+			case !roleEntry.ResolveAWSUniqueIDs && strutil.StrListContains(roleEntry.BoundIamPrincipalARNs, canonicalArn): // check 2 passed
+			default:
+				// check 3 is a bit more complex, so we do it last
+				fullArn := b.getCachedUserId(clientUserId)
 				if fullArn == "" {
-					return nil, fmt.Errorf("got empty string back when looking up full ARN of entity %v", entity)
+					entity, err := parseRamArn(canonicalArn)
+					if err != nil {
+						return nil, errwrap.Wrapf(fmt.Sprintf("error parsing ARN %q: {{err}}", canonicalArn), err)
+					}
+					fullArn, err = b.fullArn(ctx, entity, req.Storage)
+					if err != nil {
+						return nil, errwrap.Wrapf(fmt.Sprintf("error looking up full ARN of entity %v: {{err}}", entity), err)
+					}
+					if fullArn == "" {
+						return nil, fmt.Errorf("got empty string back when looking up full ARN of entity %v", entity)
+					}
+					if clientUserId != "" {
+						b.setCachedUserId(clientUserId, fullArn)
+					}
 				}
-				if clientUserId != "" {
-					b.setCachedUserId(clientUserId, fullArn)
+				matchedWildcardBind := false
+				for _, principalARN := range roleEntry.BoundIamPrincipalARNs {
+					if strings.HasSuffix(principalARN, "*") && strutil.GlobbedStringsMatch(principalARN, fullArn) {
+						matchedWildcardBind = true
+						break
+					}
 				}
-			}
-			matchedWildcardBind := false
-			for _, principalARN := range roleEntry.BoundIamPrincipalARNs {
-				if strings.HasSuffix(principalARN, "*") && strutil.GlobbedStringsMatch(principalARN, fullArn) {
-					matchedWildcardBind = true
-					break
+				if !matchedWildcardBind {
+					return nil, fmt.Errorf("role no longer bound to ARN %q", canonicalArn)
 				}
-			}
-			if !matchedWildcardBind {
-				return nil, fmt.Errorf("role no longer bound to ARN %q", canonicalArn)
 			}
 		}
-	}
-
+	*/
 	resp := &logical.Response{Auth: req.Auth}
 	resp.Auth.TTL = roleEntry.TTL
 	resp.Auth.MaxTTL = roleEntry.MaxTTL
@@ -1165,14 +1127,11 @@ func (b *backend) pathLoginUpdateIam(ctx context.Context, req *logical.Request, 
 	endpoint := "https://sts.amazonaws.com"
 
 	if config != nil {
-		if config.IAMServerIdHeaderValue != "" {
-			err = validateVaultHeaderValue(headers, parsedUrl, config.IAMServerIdHeaderValue)
+		if config.InstanceIdentityAudience != "" {
+			err = validateVaultHeaderValue(headers, parsedUrl, config.InstanceIdentityAudience)
 			if err != nil {
 				return logical.ErrorResponse(fmt.Sprintf("error validating %s header: %v", iamServerIdHeader, err)), nil
 			}
-		}
-		if config.STSEndpoint != "" {
-			endpoint = config.STSEndpoint
 		}
 	}
 
@@ -1217,44 +1176,47 @@ func (b *backend) pathLoginUpdateIam(ctx context.Context, req *logical.Request, 
 		return logical.ErrorResponse(fmt.Sprintf("auth method iam not allowed for role %s", roleName)), nil
 	}
 
-	// The role creation should ensure that either we're inferring this is an EC2 instance
-	// or that we're binding an ARN
-	if len(roleEntry.BoundIamPrincipalARNs) > 0 {
-		// As with renews, there are three ways to pass this check:
-		// 1: callerUniqueId is in roleEntry.BoundIamPrincipalIDs (entries in roleEntry.BoundIamPrincipalIDs
-		//    implies that roleEntry.ResolveAWSUniqueIDs is true)
-		// 2: roleEntry.ResolveAWSUniqueIDs is false and entity.canonicalArn() is in roleEntry.BoundIamPrincipalARNs
-		// 3: Full ARN matches one of the wildcard globs in roleEntry.BoundIamPrincipalARNs
-		// Need to be able to handle pathological configurations such as roleEntry.BoundIamPrincipalARNs looking something like:
-		// arn:aw:iam::123456789012:{user/UserName,user/path/*,role/RoleName,role/path/*}
-		switch {
-		case strutil.StrListContains(roleEntry.BoundIamPrincipalIDs, callerUniqueId): // check 1 passed
-		case !roleEntry.ResolveAWSUniqueIDs && strutil.StrListContains(roleEntry.BoundIamPrincipalARNs, entity.canonicalArn()): // check 2 passed
-		default:
-			// evaluate check 3
-			fullArn := b.getCachedUserId(callerUniqueId)
-			if fullArn == "" {
-				fullArn, err = b.fullArn(ctx, entity, req.Storage)
-				if err != nil {
-					return logical.ErrorResponse(fmt.Sprintf("error looking up full ARN of entity %v: %v", entity, err)), nil
-				}
+	/*
+		TODO can we support this when it comes to regions?
+		// The role creation should ensure that either we're inferring this is an EC2 instance
+		// or that we're binding an ARN
+		if len(roleEntry.BoundIamPrincipalARNs) > 0 {
+			// As with renews, there are three ways to pass this check:
+			// 1: callerUniqueId is in roleEntry.BoundIamPrincipalIDs (entries in roleEntry.BoundIamPrincipalIDs
+			//    implies that roleEntry.ResolveAWSUniqueIDs is true)
+			// 2: roleEntry.ResolveAWSUniqueIDs is false and entity.canonicalArn() is in roleEntry.BoundIamPrincipalARNs
+			// 3: Full ARN matches one of the wildcard globs in roleEntry.BoundIamPrincipalARNs
+			// Need to be able to handle pathological configurations such as roleEntry.BoundIamPrincipalARNs looking something like:
+			// arn:aw:iam::123456789012:{user/UserName,user/path/*,role/RoleName,role/path/*}
+			switch {
+			case strutil.StrListContains(roleEntry.BoundIamPrincipalIDs, callerUniqueId): // check 1 passed
+			case !roleEntry.ResolveAWSUniqueIDs && strutil.StrListContains(roleEntry.BoundIamPrincipalARNs, entity.canonicalArn()): // check 2 passed
+			default:
+				// evaluate check 3
+				fullArn := b.getCachedUserId(callerUniqueId)
 				if fullArn == "" {
-					return logical.ErrorResponse(fmt.Sprintf("got empty string back when looking up full ARN of entity %v", entity)), nil
+					fullArn, err = b.fullArn(ctx, entity, req.Storage)
+					if err != nil {
+						return logical.ErrorResponse(fmt.Sprintf("error looking up full ARN of entity %v: %v", entity, err)), nil
+					}
+					if fullArn == "" {
+						return logical.ErrorResponse(fmt.Sprintf("got empty string back when looking up full ARN of entity %v", entity)), nil
+					}
+					b.setCachedUserId(callerUniqueId, fullArn)
 				}
-				b.setCachedUserId(callerUniqueId, fullArn)
-			}
-			matchedWildcardBind := false
-			for _, principalARN := range roleEntry.BoundIamPrincipalARNs {
-				if strings.HasSuffix(principalARN, "*") && strutil.GlobbedStringsMatch(principalARN, fullArn) {
-					matchedWildcardBind = true
-					break
+				matchedWildcardBind := false
+				for _, principalARN := range roleEntry.BoundIamPrincipalARNs {
+					if strings.HasSuffix(principalARN, "*") && strutil.GlobbedStringsMatch(principalARN, fullArn) {
+						matchedWildcardBind = true
+						break
+					}
 				}
-			}
-			if !matchedWildcardBind {
-				return logical.ErrorResponse(fmt.Sprintf("IAM Principal %q does not belong to the role %q", callerID.Arn, roleName)), nil
+				if !matchedWildcardBind {
+					return logical.ErrorResponse(fmt.Sprintf("IAM Principal %q does not belong to the role %q", callerID.Arn, roleName)), nil
+				}
 			}
 		}
-	}
+	*/
 
 	policies := roleEntry.Policies
 
@@ -1268,12 +1230,11 @@ func (b *backend) pathLoginUpdateIam(ctx context.Context, req *logical.Request, 
 
 		// build a fake identity doc to pass on metadata about the instance to verifyInstanceMeetsRoleRequirements
 		identityDoc := &identityDocument{
-			Tags:        nil, // Don't really need the tags, so not doing the work of converting them from Instance.Tags to identityDocument.Tags
-			InstanceID:  *instance.InstanceId,
-			AmiID:       *instance.ImageId,
-			AccountID:   callerID.Account,
-			Region:      roleEntry.InferredAWSRegion,
-			PendingTime: instance.LaunchTime.Format(time.RFC3339),
+			Tags:       nil, // Don't really need the tags, so not doing the work of converting them from Instance.Tags to identityDocument.Tags
+			InstanceID: instance.InstanceId,
+			AmiID:      instance.ImageId,
+			AccountID:  callerID.Account,
+			Region:     roleEntry.InferredAWSRegion,
 		}
 
 		validationError, err := b.verifyInstanceMeetsRoleRequirements(ctx, req.Storage, instance, roleEntry, roleName, identityDoc)
@@ -1363,7 +1324,7 @@ func parseRamArn(ramArn string) (*ramEntity, error) {
 	if fullParts[0] != "acs" {
 		return nil, fmt.Errorf("unrecognized arn: does not begin with \"acs:\"")
 	}
-	entity.Partition = fullParts[0]
+	entity.ACS = fullParts[0]
 	if fullParts[1] != "ram" && fullParts[1] != "sts" {
 		return nil, fmt.Errorf("unrecognized service: %v, not one of ram or sts", fullParts[1])
 	}
@@ -1595,7 +1556,7 @@ type roleTagLoginResponse struct {
 }
 
 type ramEntity struct {
-	Partition     string
+	ACS           string
 	AccountNumber string
 	Type          string
 	Path          string
@@ -1615,37 +1576,26 @@ func (e *ramEntity) canonicalArn() string {
 	// make an AWS API call to look up the role by FriendlyName, which introduces more complexity to
 	// code and test, and it also breaks backwards compatibility in an area where we would really want
 	// it
-	return fmt.Sprintf("arn:%s:iam::%s:%s/%s", e.Partition, e.AccountNumber, entityType, e.FriendlyName)
+	return fmt.Sprintf("arn:%s:iam::%s:%s/%s", e.ACS, e.AccountNumber, entityType, e.FriendlyName)
 }
 
 // This returns the "full" ARN of an ramEntity, how it would be referred to in AWS proper
-func (b *backend) fullArn(ctx context.Context, e *ramEntity, s logical.Storage) (string, error) {
+func (b *backend) fullArn(ctx context.Context, e *ramEntity, s logical.Storage, regionID string) (string, error) {
 	// Not assuming path is reliable for any entity types
-	client, err := b.clientIAM(ctx, s, getAnyRegionForAwsPartition(e.Partition).ID(), e.AccountNumber)
+	client, err := b.getRAMClient(ctx, s, regionID)
 	if err != nil {
 		return "", errwrap.Wrapf("error creating IAM client: {{err}}", err)
 	}
 
 	switch e.Type {
 	case "user":
-		input := iam.GetUserInput{
-			UserName: aws.String(e.FriendlyName),
-		}
-		resp, err := client.GetUser(&input)
-		if err != nil {
-			return "", errwrap.Wrapf(fmt.Sprintf("error fetching user %q: {{err}}", e.FriendlyName), err)
-		}
-		if resp == nil {
-			return "", fmt.Errorf("nil response from GetUser")
-		}
-		// TODO test to see if this works. It looks like GetUser doesn't return an arn.
-		// If not, we might have gotten it earlier on when we were resolving arns to real ID's - m
-		return *(resp.User.Arn), nil
+		// TODO you can't get a user arn this way with alibaba, need to analyze the impacts
+		fallthrough
 	case "assumed-role":
 		fallthrough
 	case "role":
-		input := iam.GetRoleInput{
-			RoleName: aws.String(e.FriendlyName),
+		input := ram.GetRoleRequest{
+			RoleName: e.FriendlyName,
 		}
 		resp, err := client.GetRole(&input)
 		if err != nil {
@@ -1654,7 +1604,7 @@ func (b *backend) fullArn(ctx context.Context, e *ramEntity, s logical.Storage) 
 		if resp == nil {
 			return "", fmt.Errorf("nil response form GetRole")
 		}
-		return *(resp.Role.Arn), nil
+		return resp.Role.Arn, nil
 	default:
 		return "", fmt.Errorf("unrecognized entity type: %s", e.Type)
 	}

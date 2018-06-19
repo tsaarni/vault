@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/session"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/service/sts"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/hashicorp/vault/helper/policyutil"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"

@@ -1,12 +1,9 @@
 package alibabautil
 
 import (
-	"fmt"
 	"net/http"
 
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/credentials"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/defaults"
+	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/auth/credentials"
 )
 
 type CredentialsConfig struct {
@@ -34,51 +31,14 @@ type CredentialsConfig struct {
 	HTTPClient *http.Client
 }
 
-func (c *CredentialsConfig) GenerateCredentialChain() (*credentials.Credentials, error) {
-	var providers []credentials.Provider
-
-	switch {
-	case c.AccessKey != "" && c.SecretKey != "":
-		// Add the static credential provider
-		providers = append(providers, &credentials.StaticProvider{
-			Value: credentials.Value{
-				AccessKeyID:     c.AccessKey,
-				SecretAccessKey: c.SecretKey,
-				SessionToken:    c.SessionToken,
-			}})
-	case c.AccessKey == "" && c.SecretKey == "":
-		// Attempt to get credentials from the IAM instance role below
-
-	default: // Have one or the other but not both and not neither
-		return nil, fmt.Errorf(
-			"static AWS client credentials haven't been properly configured (the access key or secret key were provided but not both)")
+// TODO - support more types of credentials,
+// and strip params above for ones you won't support
+// and consider pulling them from the env to be more aws-y or a file
+// although the sdk doesn't support it.
+// Or don't because security risk?
+func (c *CredentialsConfig) GenerateCredentialChain() *credentials.AccessKeyCredential {
+	return &credentials.AccessKeyCredential{
+		AccessKeyId:     c.AccessKey,
+		AccessKeySecret: c.SecretKey,
 	}
-
-	// Add the environment credential provider
-	providers = append(providers, &credentials.EnvProvider{})
-
-	// Add the shared credentials provider
-	providers = append(providers, &credentials.SharedCredentialsProvider{
-		Filename: c.Filename,
-		Profile:  c.Profile,
-	})
-
-	// Add the remote provider
-	def := defaults.Get()
-	if c.Region != "" {
-		def.Config.Region = aws.String(c.Region)
-	}
-	if c.HTTPClient != nil {
-		def.Config.HTTPClient = c.HTTPClient
-	}
-
-	providers = append(providers, defaults.RemoteCredProvider(*def.Config, def.Handlers))
-
-	// Create the credentials required to access the API.
-	creds := credentials.NewChainCredentials(providers)
-	if creds == nil {
-		return nil, fmt.Errorf("could not compile valid credential providers from static config, environment, shared, or instance metadata")
-	}
-
-	return creds, nil
 }

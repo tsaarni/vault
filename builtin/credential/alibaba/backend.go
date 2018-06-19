@@ -6,9 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/aws/endpoints"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/service/ec2"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/alibaba-sdk-go/service/iam"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/ram"
 	"github.com/hashicorp/vault/helper/consts"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
@@ -51,18 +49,6 @@ type backend struct {
 	// of tidyCooldownPeriod.
 	nextTidyTime time.Time
 
-	// Map to hold the EC2 client objects indexed by region and STS role.
-	// This avoids the overhead of creating a client object for every login request.
-	// When the credentials are modified or deleted, all the cached client objects
-	// will be flushed. The empty STS role signifies the master account
-	EC2ClientsMap map[string]map[string]*ec2.EC2
-
-	// Map to hold the IAM client objects indexed by region and STS role.
-	// This avoids the overhead of creating a client object for every login request.
-	// When the credentials are modified or deleted, all the cached client objects
-	// will be flushed. The empty STS role signifies the master account
-	IAMClientsMap map[string]map[string]*iam.IAM
-
 	// Map of AWS unique IDs to the full ARN corresponding to that unique ID
 	// This avoids the overhead of an AWS API hit for every login request
 	// using the IAM auth method when bound_iam_principal_arn contains a wildcard
@@ -75,7 +61,7 @@ type backend struct {
 	// accounts using their IAM instance profile to get their credentials.
 	defaultAWSAccountID string
 
-	resolveArnToUniqueIDFunc func(context.Context, logical.Storage, string) (string, error)
+	resolveArnToUniqueIDFunc func(ctx context.Context, s logical.Storage, arn, regionID string) (string, error)
 }
 
 func Backend(conf *logical.BackendConfig) (*backend, error) {
@@ -83,8 +69,6 @@ func Backend(conf *logical.BackendConfig) (*backend, error) {
 		// Setting the periodic func to be run once in an hour.
 		// If there is a real need, this can be made configurable.
 		tidyCooldownPeriod:  time.Hour,
-		EC2ClientsMap:       make(map[string]map[string]*ec2.EC2),
-		IAMClientsMap:       make(map[string]map[string]*iam.IAM),
 		iamUserIdToArnCache: cache.New(7*24*time.Hour, 24*time.Hour),
 	}
 
@@ -112,12 +96,10 @@ func Backend(conf *logical.BackendConfig) (*backend, error) {
 			pathRole(b),
 			pathRoleTag(b),
 			pathConfigClient(b),
-			pathConfigCertificate(b),
 			pathConfigSts(b),
 			pathListSts(b),
 			pathConfigTidyRoletagBlacklist(b),
 			pathConfigTidyIdentityWhitelist(b),
-			pathListCertificates(b),
 			pathListRoletagBlacklist(b),
 			pathRoletagBlacklist(b),
 			pathTidyRoletagBlacklist(b),
@@ -201,80 +183,46 @@ func (b *backend) invalidate(ctx context.Context, key string) {
 	case "config/client":
 		b.configMutex.Lock()
 		defer b.configMutex.Unlock()
-		b.flushCachedEC2Clients()
-		b.flushCachedIAMClients()
+		// TODO if you end up caching clients again, flush them here
 		b.defaultAWSAccountID = ""
 	}
 }
 
 // Putting this here so we can inject a fake resolver into the backend for unit testing
 // purposes
-func (b *backend) resolveArnToRealUniqueId(ctx context.Context, s logical.Storage, arn string) (string, error) {
+func (b *backend) resolveArnToRealUniqueId(ctx context.Context, s logical.Storage, arn, regionID string) (string, error) {
 	entity, err := parseRamArn(arn)
 	if err != nil {
 		return "", err
 	}
 
-	// This odd-looking code is here because IAM is an inherently global service. IAM and STS ARNs
-	// don't have regions in them, and there is only a single global endpoint for IAM; see
-	// http://docs.aws.amazon.com/general/latest/gr/rande.html#iam_region
-	// However, the ARNs do have a partition in them, because the GovCloud and China partitions DO
-	// have their own separate endpoints, and the partition is encoded in the ARN. If Amazon's Go SDK
-	// would allow us to pass a partition back to the IAM client, it would be much simpler. But it
-	// doesn't appear that's possible, so in order to properly support GovCloud and China, we do a
-	// circular dance of extracting the partition from the ARN, finding any arbitrary region in the
-	// partition, and passing that region back back to the SDK, so that the SDK can figure out the
-	// proper partition from the arbitrary region we passed in to look up the endpoint.
-	// Sigh
-	region := getAnyRegionForAwsPartition(entity.Partition)
-	if region == nil {
-		return "", fmt.Errorf("unable to resolve partition %q to a region", entity.Partition)
-	}
-
-	iamClient, err := b.clientIAM(ctx, s, region.ID(), entity.AccountNumber)
+	iamClient, err := b.getRAMClient(ctx, s, regionID)
 	if err != nil {
 		return "", err
 	}
 	switch entity.Type {
 	case "user":
-		userInfo, err := iamClient.GetUser(&iam.GetUserInput{UserName: &entity.FriendlyName})
+		userInfo, err := iamClient.GetUser(&ram.GetUserRequest{UserName: entity.FriendlyName})
 		if err != nil {
 			return "", err
 		}
 		if userInfo == nil {
 			return "", fmt.Errorf("got nil result from GetUser")
 		}
-		return *userInfo.User.UserId, nil
+		return userInfo.User.UserId, nil
 	case "role":
-		roleInfo, err := iamClient.GetRole(&iam.GetRoleInput{RoleName: &entity.FriendlyName})
+		roleInfo, err := iamClient.GetRole(&ram.GetRoleRequest{RoleName: entity.FriendlyName})
 		if err != nil {
 			return "", err
 		}
 		if roleInfo == nil {
 			return "", fmt.Errorf("got nil result from GetRole")
 		}
-		return *roleInfo.Role.RoleId, nil
-	//case "instance-profile":
-	// This has no equivalent method in Alibaba.
+		return roleInfo.Role.RoleId, nil
+	// TODO what was the last case here? Try again to support it.
 	default:
 		return "", fmt.Errorf("unrecognized error type %#v", entity.Type)
 	}
-}
-
-// Adapted from https://docs.aws.amazon.com/sdk-for-go/api/aws/endpoints/
-// the "Enumerating Regions and Endpoint Metadata" section
-func getAnyRegionForAwsPartition(partitionId string) *endpoints.Region {
-	resolver := endpoints.DefaultResolver()
-	partitions := resolver.(endpoints.EnumPartitions).Partitions()
-
-	for _, p := range partitions {
-		if p.ID() == partitionId {
-			for _, r := range p.Regions() {
-				return &r
-			}
-		}
-	}
-	return nil
 }
 
 const backendHelp = `

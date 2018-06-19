@@ -33,7 +33,7 @@ func TestBackend_pathConfigClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	// at this point, resp == nil is valid as no client config exists
-	// if resp != nil, then resp.Data must have EndPoint and IAMServerIdHeaderValue as nil
+	// if resp != nil, then resp.Data must have EndPoint and InstanceIdentityAudience as nil
 	if resp != nil {
 		if resp.IsError() {
 			t.Fatalf("failed to read client config entry")

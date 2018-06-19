@@ -8,7 +8,6 @@ import (
 
 	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/go-uuid"
-	"github.com/hashicorp/vault/helper/consts"
 	"github.com/hashicorp/vault/helper/policyutil"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
@@ -130,7 +129,7 @@ of the tag should be generated using 'role/<role>/tag' endpoint.
 Defaults to an empty string, meaning that role tags are disabled. This
 is only allowed if auth_type is ec2.`,
 			},
-			"period": &framework.FieldSchema{
+			"period": {
 				Type:    framework.TypeDurationSecond,
 				Default: 0,
 				Description: `
@@ -233,44 +232,8 @@ func (b *backend) lockedAWSRole(ctx context.Context, s logical.Storage, roleName
 	}
 
 	b.roleMutex.RLock()
-	roleEntry, err := b.nonLockedAWSRole(ctx, s, roleName)
-	// we manually unlock rather than defer the unlock because we might need to grab
-	// a read/write lock in the upgrade path
-	b.roleMutex.RUnlock()
-	if err != nil {
-		return nil, err
-	}
-	if roleEntry == nil {
-		return nil, nil
-	}
-	needUpgrade, err := b.upgradeRoleEntry(ctx, s, roleEntry)
-	if err != nil {
-		return nil, errwrap.Wrapf("error upgrading roleEntry: {{err}}", err)
-	}
-	if needUpgrade && (b.System().LocalMount() || !b.System().ReplicationState().HasState(consts.ReplicationPerformanceSecondary)) {
-		b.roleMutex.Lock()
-		defer b.roleMutex.Unlock()
-		// Now that we have a R/W lock, we need to re-read the role entry in case it was
-		// written to between releasing the read lock and acquiring the write lock
-		roleEntry, err = b.nonLockedAWSRole(ctx, s, roleName)
-		if err != nil {
-			return nil, err
-		}
-		// somebody deleted the role, so no use in putting it back
-		if roleEntry == nil {
-			return nil, nil
-		}
-		// now re-check to see if we need to upgrade
-		if needUpgrade, err = b.upgradeRoleEntry(ctx, s, roleEntry); err != nil {
-			return nil, errwrap.Wrapf("error upgrading roleEntry: {{err}}", err)
-		}
-		if needUpgrade {
-			if err = b.nonLockedSetAWSRole(ctx, s, roleName, roleEntry); err != nil {
-				return nil, errwrap.Wrapf("error saving upgraded roleEntry: {{err}}", err)
-			}
-		}
-	}
-	return roleEntry, nil
+	defer b.roleMutex.RUnlock()
+	return b.nonLockedAWSRole(ctx, s, roleName)
 }
 
 // lockedSetAWSRole creates or updates a role in the storage. This method
@@ -313,103 +276,6 @@ func (b *backend) nonLockedSetAWSRole(ctx context.Context, s logical.Storage, ro
 	}
 
 	return nil
-}
-
-// If needed, updates the role entry and returns a bool indicating if it was updated
-// (and thus needs to be persisted)
-func (b *backend) upgradeRoleEntry(ctx context.Context, s logical.Storage, roleEntry *awsRoleEntry) (bool, error) {
-	if roleEntry == nil {
-		return false, fmt.Errorf("received nil roleEntry")
-	}
-	upgraded := roleEntry.Version < currentRoleStorageVersion
-	switch roleEntry.Version {
-	case 0:
-		// Check if the value held by role ARN field is actually an instance profile ARN
-		if roleEntry.BoundIamRoleARN != "" && strings.Contains(roleEntry.BoundIamRoleARN, ":instance-profile/") {
-			// If yes, move it to the correct field
-			roleEntry.BoundIamInstanceProfileARN = roleEntry.BoundIamRoleARN
-
-			// Reset the old field
-			roleEntry.BoundIamRoleARN = ""
-		}
-
-		// Check if there was no pre-existing AuthType set (from older versions)
-		if roleEntry.AuthType == "" {
-			// then default to the original behavior of ec2
-			roleEntry.AuthType = ec2AuthType
-		}
-
-		// Check if we need to resolve the unique ID on the role
-		if roleEntry.AuthType == iamAuthType &&
-			roleEntry.ResolveAWSUniqueIDs &&
-			roleEntry.BoundIamPrincipalARN != "" &&
-			roleEntry.BoundIamPrincipalID == "" &&
-			!strings.HasSuffix(roleEntry.BoundIamPrincipalARN, "*") {
-			principalId, err := b.resolveArnToUniqueIDFunc(ctx, s, roleEntry.BoundIamPrincipalARN)
-			if err != nil {
-				return false, err
-			}
-			roleEntry.BoundIamPrincipalID = principalId
-			// Not setting roleEntry.BoundIamPrincipalARN to "" here so that clients can see the original
-			// ARN that the role was bound to
-		}
-
-		// Check if we need to convert individual string values to lists
-		if roleEntry.BoundAmiID != "" {
-			roleEntry.BoundAmiIDs = []string{roleEntry.BoundAmiID}
-			roleEntry.BoundAmiID = ""
-		}
-		if roleEntry.BoundAccountID != "" {
-			roleEntry.BoundAccountIDs = []string{roleEntry.BoundAccountID}
-			roleEntry.BoundAccountID = ""
-		}
-		if roleEntry.BoundIamPrincipalARN != "" {
-			roleEntry.BoundIamPrincipalARNs = []string{roleEntry.BoundIamPrincipalARN}
-			roleEntry.BoundIamPrincipalARN = ""
-		}
-		if roleEntry.BoundIamPrincipalID != "" {
-			roleEntry.BoundIamPrincipalIDs = []string{roleEntry.BoundIamPrincipalID}
-			roleEntry.BoundIamPrincipalID = ""
-		}
-		if roleEntry.BoundIamRoleARN != "" {
-			roleEntry.BoundIamRoleARNs = []string{roleEntry.BoundIamRoleARN}
-			roleEntry.BoundIamRoleARN = ""
-		}
-		if roleEntry.BoundIamInstanceProfileARN != "" {
-			roleEntry.BoundIamInstanceProfileARNs = []string{roleEntry.BoundIamInstanceProfileARN}
-			roleEntry.BoundIamInstanceProfileARN = ""
-		}
-		if roleEntry.BoundRegion != "" {
-			roleEntry.BoundRegions = []string{roleEntry.BoundRegion}
-			roleEntry.BoundRegion = ""
-		}
-		if roleEntry.BoundSubnetID != "" {
-			roleEntry.BoundSubnetIDs = []string{roleEntry.BoundSubnetID}
-			roleEntry.BoundSubnetID = ""
-		}
-		if roleEntry.BoundVpcID != "" {
-			roleEntry.BoundVpcIDs = []string{roleEntry.BoundVpcID}
-			roleEntry.BoundVpcID = ""
-		}
-		roleEntry.Version = 1
-		fallthrough
-	case 1:
-		// Make BoundIamRoleARNs and BoundIamInstanceProfileARNs explicitly prefix-matched
-		for i, arn := range roleEntry.BoundIamRoleARNs {
-			roleEntry.BoundIamRoleARNs[i] = fmt.Sprintf("%s*", arn)
-		}
-		for i, arn := range roleEntry.BoundIamInstanceProfileARNs {
-			roleEntry.BoundIamInstanceProfileARNs[i] = fmt.Sprintf("%s*", arn)
-		}
-		roleEntry.Version = 2
-		fallthrough
-	case currentRoleStorageVersion:
-	default:
-		return false, fmt.Errorf("unrecognized role version: %q", roleEntry.Version)
-	}
-
-	return upgraded, nil
-
 }
 
 // nonLockedAWSRole returns the properties set on the given role. This method
@@ -486,6 +352,9 @@ func (b *backend) pathRoleCreateUpdate(ctx context.Context, req *logical.Request
 		return logical.ErrorResponse("missing role"), nil
 	}
 
+	// TODO it should be easy for EC2 instances to give their region because it can be found in its own
+	// GetInstanceMetadata. Then that would just tell us where to call to get that instance. But is this the right place for it?
+
 	b.roleMutex.Lock()
 	defer b.roleMutex.Unlock()
 
@@ -494,20 +363,7 @@ func (b *backend) pathRoleCreateUpdate(ctx context.Context, req *logical.Request
 		return nil, err
 	}
 	if roleEntry == nil {
-		roleEntry = &awsRoleEntry{
-			Version: currentRoleStorageVersion,
-		}
-	} else {
-		needUpdate, err := b.upgradeRoleEntry(ctx, req.Storage, roleEntry)
-		if err != nil {
-			return logical.ErrorResponse(fmt.Sprintf("failed to update roleEntry: %v", err)), nil
-		}
-		if needUpdate {
-			err = b.nonLockedSetAWSRole(ctx, req.Storage, roleName, roleEntry)
-			if err != nil {
-				return logical.ErrorResponse(fmt.Sprintf("failed to save upgraded roleEntry: %v", err)), nil
-			}
-		}
+		roleEntry = &awsRoleEntry{}
 	}
 
 	// Fetch and set the bound parameters. There can't be default values
@@ -562,18 +418,21 @@ func (b *backend) pathRoleCreateUpdate(ctx context.Context, req *logical.Request
 		roleEntry.BoundIamPrincipalARNs = principalARNs
 		roleEntry.BoundIamPrincipalIDs = []string{}
 	}
-	if roleEntry.ResolveAWSUniqueIDs && len(roleEntry.BoundIamPrincipalIDs) == 0 {
-		// we might be turning on resolution on this role, so ensure we update the IDs
-		for _, principalARN := range roleEntry.BoundIamPrincipalARNs {
-			if !strings.HasSuffix(principalARN, "*") {
-				principalID, err := b.resolveArnToUniqueIDFunc(ctx, req.Storage, principalARN)
-				if err != nil {
-					return logical.ErrorResponse(fmt.Sprintf("unable to resolve ARN %#v to internal ID: %#v", principalARN, err)), nil
+	/*
+		TODO - I don't think we can support this? Or can we?
+		if roleEntry.ResolveAWSUniqueIDs && len(roleEntry.BoundIamPrincipalIDs) == 0 {
+			// we might be turning on resolution on this role, so ensure we update the IDs
+			for _, principalARN := range roleEntry.BoundIamPrincipalARNs {
+				if !strings.HasSuffix(principalARN, "*") {
+					principalID, err := b.resolveArnToUniqueIDFunc(ctx, req.Storage, principalARN)
+					if err != nil {
+						return logical.ErrorResponse(fmt.Sprintf("unable to resolve ARN %#v to internal ID: %#v", principalARN, err)), nil
+					}
+					roleEntry.BoundIamPrincipalIDs = append(roleEntry.BoundIamPrincipalIDs, principalID)
 				}
-				roleEntry.BoundIamPrincipalIDs = append(roleEntry.BoundIamPrincipalIDs, principalID)
 			}
 		}
-	}
+	*/
 
 	if inferRoleTypeRaw, ok := data.GetOk("inferred_entity_type"); ok {
 		roleEntry.InferredEntityType = inferRoleTypeRaw.(string)
@@ -829,17 +688,6 @@ type awsRoleEntry struct {
 	DisallowReauthentication    bool          `json:"disallow_reauthentication"`
 	HMACKey                     string        `json:"hmac_key"`
 	Period                      time.Duration `json:"period"`
-	Version                     int           `json:"version"`
-	// DEPRECATED -- these are the old fields before we supported lists and exist for backwards compatibility
-	BoundAmiID                 string `json:"bound_ami_id,omitempty" `
-	BoundAccountID             string `json:"bound_account_id,omitempty"`
-	BoundIamPrincipalARN       string `json:"bound_iam_principal_arn,omitempty"`
-	BoundIamPrincipalID        string `json:"bound_iam_principal_id,omitempty"`
-	BoundIamRoleARN            string `json:"bound_iam_role_arn,omitempty"`
-	BoundIamInstanceProfileARN string `json:"bound_iam_instance_profile_arn,omitempty"`
-	BoundRegion                string `json:"bound_region,omitempty"`
-	BoundSubnetID              string `json:"bound_subnet_id,omitempty"`
-	BoundVpcID                 string `json:"bound_vpc_id,omitempty"`
 }
 
 func (r *awsRoleEntry) ToResponseData() map[string]interface{} {
