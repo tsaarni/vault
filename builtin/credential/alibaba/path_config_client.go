@@ -23,11 +23,15 @@ func pathConfigClient(b *backend) *framework.Path {
 				Description: "AWS Secret Access Key for the account used to make AWS API requests.",
 			},
 
-			// TODO does this really belong here statically or should it be more dynamic? Maybe the role? Maybe something ephemeral?
 			"instance_identity_audience": {
-				Type:        framework.TypeString,
-				Default:     "",
-				Description: `Value to require as the "audience", see https://www.alibabacloud.com/help/doc-detail/67254.htm for more.`,
+				Type:    framework.TypeString,
+				Default: "",
+				Description: `The value to require in the "audience" header as part of GetCallerIdentity requests that 
+are used in the iam auth method. If not set, then no value is required or validated. If set, clients must include an 
+"audience" header in the headers of login requests, and further this header must be among the signed headers validated 
+by Alibaba. This is to protect against different types of replay attacks, for example a signed request sent to a dev 
+server being resent to a production server. Consider setting this to the Vault server's DNS name. See https://www.alibabacloud.com/help/doc-detail/67254.htm 
+for more.`,
 			},
 		},
 
@@ -194,9 +198,8 @@ func (b *backend) pathConfigClientCreateUpdate(ctx context.Context, req *logical
 // interact with the AWS EC2 API.
 // TODO add config params for the client config that you _can_ set, embed that config obj directly here if it's jsonable
 type clientConfig struct {
-	AccessKey string `json:"access_key"`
-	SecretKey string `json:"secret_key"`
-	// TODO I don't thing this is being used correctly in practice since it's no longer a header
+	AccessKey                string `json:"access_key"`
+	SecretKey                string `json:"secret_key"`
 	InstanceIdentityAudience string `json:"instance_identity_audience"`
 }
 

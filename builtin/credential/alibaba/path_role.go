@@ -13,10 +13,6 @@ import (
 	"github.com/hashicorp/vault/logical/framework"
 )
 
-var (
-	currentRoleStorageVersion = 2
-)
-
 func pathRole(b *backend) *framework.Path {
 	return &framework.Path{
 		Pattern: "role/" + framework.GenericNameRegex("role"),
@@ -63,14 +59,6 @@ The value is prefix-matched (as though it were a glob ending in
 to execute the 'iam:GetInstanceProfile' action if this is specified. This is
 only applicable when auth_type is ec2 or inferred_entity_type is
 ec2_instance.`,
-			},
-			"bound_iam_instance_profile_arn": {
-				Type: framework.TypeCommaStringSlice,
-				Description: `If set, defines a constraint on the EC2 instances to be associated
-with an IAM instance profile ARN which has a prefix that matches
-one of the values specified by this parameter. The value is prefix-matched
-(as though it were a glob ending in '*'). This is only applicable when
-auth_type is ec2 or inferred_entity_type is ec2_instance.`,
 			},
 			"bound_ec2_instance_id": {
 				Type: framework.TypeCommaStringSlice,
@@ -352,9 +340,6 @@ func (b *backend) pathRoleCreateUpdate(ctx context.Context, req *logical.Request
 		return logical.ErrorResponse("missing role"), nil
 	}
 
-	// TODO it should be easy for EC2 instances to give their region because it can be found in its own
-	// GetInstanceMetadata. Then that would just tell us where to call to get that instance. But is this the right place for it?
-
 	b.roleMutex.Lock()
 	defer b.roleMutex.Unlock()
 
@@ -385,7 +370,7 @@ func (b *backend) pathRoleCreateUpdate(ctx context.Context, req *logical.Request
 	}
 
 	if boundSubnetIDRaw, ok := data.GetOk("bound_subnet_id"); ok {
-		roleEntry.BoundSubnetIDs = boundSubnetIDRaw.([]string)
+		roleEntry.BoundVSwitchIDs = boundSubnetIDRaw.([]string)
 	}
 
 	if resolveAWSUniqueIDsRaw, ok := data.GetOk("resolve_aws_unique_ids"); ok {
@@ -405,10 +390,6 @@ func (b *backend) pathRoleCreateUpdate(ctx context.Context, req *logical.Request
 		roleEntry.BoundIamRoleARNs = boundIamRoleARNRaw.([]string)
 	}
 
-	if boundIamInstanceProfileARNRaw, ok := data.GetOk("bound_iam_instance_profile_arn"); ok {
-		roleEntry.BoundIamInstanceProfileARNs = boundIamInstanceProfileARNRaw.([]string)
-	}
-
 	if boundEc2InstanceIDRaw, ok := data.GetOk("bound_ec2_instance_id"); ok {
 		roleEntry.BoundEc2InstanceIDs = boundEc2InstanceIDRaw.([]string)
 	}
@@ -418,21 +399,19 @@ func (b *backend) pathRoleCreateUpdate(ctx context.Context, req *logical.Request
 		roleEntry.BoundIamPrincipalARNs = principalARNs
 		roleEntry.BoundIamPrincipalIDs = []string{}
 	}
-	/*
-		TODO - I don't think we can support this? Or can we?
-		if roleEntry.ResolveAWSUniqueIDs && len(roleEntry.BoundIamPrincipalIDs) == 0 {
-			// we might be turning on resolution on this role, so ensure we update the IDs
-			for _, principalARN := range roleEntry.BoundIamPrincipalARNs {
-				if !strings.HasSuffix(principalARN, "*") {
-					principalID, err := b.resolveArnToUniqueIDFunc(ctx, req.Storage, principalARN)
-					if err != nil {
-						return logical.ErrorResponse(fmt.Sprintf("unable to resolve ARN %#v to internal ID: %#v", principalARN, err)), nil
-					}
-					roleEntry.BoundIamPrincipalIDs = append(roleEntry.BoundIamPrincipalIDs, principalID)
+
+	if roleEntry.ResolveAWSUniqueIDs && len(roleEntry.BoundIamPrincipalIDs) == 0 {
+		// we might be turning on resolution on this role, so ensure we update the IDs
+		for _, principalARN := range roleEntry.BoundIamPrincipalARNs {
+			if !strings.HasSuffix(principalARN, "*") {
+				principalID, err := b.resolveArnToUniqueIDFunc(ctx, req.Storage, principalARN)
+				if err != nil {
+					return logical.ErrorResponse(fmt.Sprintf("unable to resolve ARN %#v to internal ID: %#v", principalARN, err)), nil
 				}
+				roleEntry.BoundIamPrincipalIDs = append(roleEntry.BoundIamPrincipalIDs, principalID)
 			}
 		}
-	*/
+	}
 
 	if inferRoleTypeRaw, ok := data.GetOk("inferred_entity_type"); ok {
 		roleEntry.InferredEntityType = inferRoleTypeRaw.(string)
@@ -508,13 +487,6 @@ func (b *backend) pathRoleCreateUpdate(ctx context.Context, req *logical.Request
 		numBinds++
 	}
 
-	if len(roleEntry.BoundIamInstanceProfileARNs) > 0 {
-		if !allowEc2Binds {
-			return logical.ErrorResponse(fmt.Sprintf("specified bound_iam_instance_profile_arn but not specifying ec2 auth_type or inferring %s", ec2EntityType)), nil
-		}
-		numBinds++
-	}
-
 	if len(roleEntry.BoundEc2InstanceIDs) > 0 {
 		if !allowEc2Binds {
 			return logical.ErrorResponse(fmt.Sprintf("specified bound_ec2_instance_id but not specifying ec2 auth_type or inferring %s", ec2EntityType)), nil
@@ -543,7 +515,7 @@ func (b *backend) pathRoleCreateUpdate(ctx context.Context, req *logical.Request
 		numBinds++
 	}
 
-	if len(roleEntry.BoundSubnetIDs) > 0 {
+	if len(roleEntry.BoundVSwitchIDs) > 0 {
 		if !allowEc2Binds {
 			return logical.ErrorResponse(fmt.Sprintf("specified bound_subnet_id but not specifying ec2 auth_type or inferring %s", ec2EntityType)), nil
 		}
@@ -666,48 +638,46 @@ func (b *backend) pathRoleCreateUpdate(ctx context.Context, req *logical.Request
 
 // Struct to hold the information associated with a Vault role
 type awsRoleEntry struct {
-	AuthType                    string        `json:"auth_type" `
-	BoundAmiIDs                 []string      `json:"bound_ami_id_list"`
-	BoundAccountIDs             []string      `json:"bound_account_id_list"`
-	BoundEc2InstanceIDs         []string      `json:"bound_ec2_instance_id_list"`
-	BoundIamPrincipalARNs       []string      `json:"bound_iam_principal_arn_list"`
-	BoundIamPrincipalIDs        []string      `json:"bound_iam_principal_id_list"`
-	BoundIamRoleARNs            []string      `json:"bound_iam_role_arn_list"`
-	BoundIamInstanceProfileARNs []string      `json:"bound_iam_instance_profile_arn_list"`
-	BoundRegions                []string      `json:"bound_region_list"`
-	BoundSubnetIDs              []string      `json:"bound_subnet_id_list"`
-	BoundVpcIDs                 []string      `json:"bound_vpc_id_list"`
-	InferredEntityType          string        `json:"inferred_entity_type"`
-	InferredAWSRegion           string        `json:"inferred_aws_region"`
-	ResolveAWSUniqueIDs         bool          `json:"resolve_aws_unique_ids"`
-	RoleTag                     string        `json:"role_tag"`
-	AllowInstanceMigration      bool          `json:"allow_instance_migration"`
-	TTL                         time.Duration `json:"ttl"`
-	MaxTTL                      time.Duration `json:"max_ttl"`
-	Policies                    []string      `json:"policies"`
-	DisallowReauthentication    bool          `json:"disallow_reauthentication"`
-	HMACKey                     string        `json:"hmac_key"`
-	Period                      time.Duration `json:"period"`
+	AuthType                 string        `json:"auth_type" `
+	BoundAmiIDs              []string      `json:"bound_ami_id_list"`
+	BoundAccountIDs          []string      `json:"bound_account_id_list"`
+	BoundEc2InstanceIDs      []string      `json:"bound_ec2_instance_id_list"`
+	BoundIamPrincipalARNs    []string      `json:"bound_iam_principal_arn_list"`
+	BoundIamPrincipalIDs     []string      `json:"bound_iam_principal_id_list"`
+	BoundIamRoleARNs         []string      `json:"bound_iam_role_arn_list"`
+	BoundRegions             []string      `json:"bound_region_list"`
+	BoundVSwitchIDs          []string      `json:"bound_vswitch_id_list"`
+	BoundVpcIDs              []string      `json:"bound_vpc_id_list"`
+	InferredEntityType       string        `json:"inferred_entity_type"`
+	InferredAWSRegion        string        `json:"inferred_aws_region"`
+	ResolveAWSUniqueIDs      bool          `json:"resolve_aws_unique_ids"`
+	RoleTag                  string        `json:"role_tag"`
+	AllowInstanceMigration   bool          `json:"allow_instance_migration"`
+	TTL                      time.Duration `json:"ttl"`
+	MaxTTL                   time.Duration `json:"max_ttl"`
+	Policies                 []string      `json:"policies"`
+	DisallowReauthentication bool          `json:"disallow_reauthentication"`
+	HMACKey                  string        `json:"hmac_key"`
+	Period                   time.Duration `json:"period"`
 }
 
 func (r *awsRoleEntry) ToResponseData() map[string]interface{} {
 	responseData := map[string]interface{}{
-		"auth_type":                      r.AuthType,
-		"bound_ami_id":                   r.BoundAmiIDs,
-		"bound_account_id":               r.BoundAccountIDs,
-		"bound_ec2_instance_id":          r.BoundEc2InstanceIDs,
-		"bound_iam_principal_arn":        r.BoundIamPrincipalARNs,
-		"bound_iam_principal_id":         r.BoundIamPrincipalIDs,
-		"bound_iam_role_arn":             r.BoundIamRoleARNs,
-		"bound_iam_instance_profile_arn": r.BoundIamInstanceProfileARNs,
-		"bound_region":                   r.BoundRegions,
-		"bound_subnet_id":                r.BoundSubnetIDs,
-		"bound_vpc_id":                   r.BoundVpcIDs,
-		"inferred_entity_type":           r.InferredEntityType,
-		"inferred_aws_region":            r.InferredAWSRegion,
-		"resolve_aws_unique_ids":         r.ResolveAWSUniqueIDs,
-		"role_tag":                       r.RoleTag,
-		"allow_instance_migration":       r.AllowInstanceMigration,
+		"auth_type":                r.AuthType,
+		"bound_ami_id":             r.BoundAmiIDs,
+		"bound_account_id":         r.BoundAccountIDs,
+		"bound_ec2_instance_id":    r.BoundEc2InstanceIDs,
+		"bound_iam_principal_arn":  r.BoundIamPrincipalARNs,
+		"bound_iam_principal_id":   r.BoundIamPrincipalIDs,
+		"bound_iam_role_arn":       r.BoundIamRoleARNs,
+		"bound_region":             r.BoundRegions,
+		"bound_subnet_id":          r.BoundVSwitchIDs,
+		"bound_vpc_id":             r.BoundVpcIDs,
+		"inferred_entity_type":     r.InferredEntityType,
+		"inferred_aws_region":      r.InferredAWSRegion,
+		"resolve_aws_unique_ids":   r.ResolveAWSUniqueIDs,
+		"role_tag":                 r.RoleTag,
+		"allow_instance_migration": r.AllowInstanceMigration,
 		"ttl":                       r.TTL / time.Second,
 		"max_ttl":                   r.MaxTTL / time.Second,
 		"policies":                  r.Policies,
@@ -725,7 +695,6 @@ func (r *awsRoleEntry) ToResponseData() map[string]interface{} {
 	convertNilToEmptySlice(responseData, "bound_iam_principal_arn")
 	convertNilToEmptySlice(responseData, "bound_iam_principal_id")
 	convertNilToEmptySlice(responseData, "bound_iam_role_arn")
-	convertNilToEmptySlice(responseData, "bound_iam_instance_profile_arn")
 	convertNilToEmptySlice(responseData, "bound_region")
 	convertNilToEmptySlice(responseData, "bound_subnet_id")
 	convertNilToEmptySlice(responseData, "bound_vpc_id")

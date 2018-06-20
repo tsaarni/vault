@@ -61,7 +61,7 @@ type backend struct {
 	// accounts using their IAM instance profile to get their credentials.
 	defaultAWSAccountID string
 
-	resolveArnToUniqueIDFunc func(ctx context.Context, s logical.Storage, arn, regionID string) (string, error)
+	resolveArnToUniqueIDFunc func(ctx context.Context, s logical.Storage, arn string) (string, error)
 }
 
 func Backend(conf *logical.BackendConfig) (*backend, error) {
@@ -190,13 +190,13 @@ func (b *backend) invalidate(ctx context.Context, key string) {
 
 // Putting this here so we can inject a fake resolver into the backend for unit testing
 // purposes
-func (b *backend) resolveArnToRealUniqueId(ctx context.Context, s logical.Storage, arn, regionID string) (string, error) {
+func (b *backend) resolveArnToRealUniqueId(ctx context.Context, s logical.Storage, arn string) (string, error) {
 	entity, err := parseRamArn(arn)
 	if err != nil {
 		return "", err
 	}
 
-	iamClient, err := b.getRAMClient(ctx, s, regionID)
+	iamClient, err := b.getRAMClient(ctx, s)
 	if err != nil {
 		return "", err
 	}
@@ -219,7 +219,6 @@ func (b *backend) resolveArnToRealUniqueId(ctx context.Context, s logical.Storag
 			return "", fmt.Errorf("got nil result from GetRole")
 		}
 		return roleInfo.Role.RoleId, nil
-	// TODO what was the last case here? Try again to support it.
 	default:
 		return "", fmt.Errorf("unrecognized error type %#v", entity.Type)
 	}

@@ -728,12 +728,10 @@ func TestRoleEntryUpgradeV1(t *testing.T) {
 	roleEntryToUpgrade := &awsRoleEntry{
 		BoundIamRoleARNs:            []string{"arn:aws:iam::123456789012:role/my_role_prefix"},
 		BoundIamInstanceProfileARNs: []string{"arn:aws:iam::123456789012:instance-profile/my_profile-prefix"},
-		Version:                     1,
 	}
 	expected := &awsRoleEntry{
 		BoundIamRoleARNs:            []string{"arn:aws:iam::123456789012:role/my_role_prefix*"},
 		BoundIamInstanceProfileARNs: []string{"arn:aws:iam::123456789012:instance-profile/my_profile-prefix*"},
-		Version:                     currentRoleStorageVersion,
 	}
 
 	upgraded, err := b.upgradeRoleEntry(context.Background(), storage, roleEntryToUpgrade)

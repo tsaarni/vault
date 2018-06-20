@@ -1562,7 +1562,7 @@ func TestBackendAcc_LoginWithCallerIdentity(t *testing.T) {
 	// and reading the body modifies the underlying request, so it's just cleaner
 	// to get new requests.
 	stsRequestInvalidHeader, _ := stsService.GetCallerIdentityRequest(stsInputParams)
-	stsRequestInvalidHeader.HTTPRequest.Header.Add(iamServerIdHeader, "InvalidValue")
+	stsRequestInvalidHeader.HTTPRequest.Header.Add(instanceIdentityAudienceHeader, "InvalidValue")
 	stsRequestInvalidHeader.Sign()
 	loginData, err = buildCallerIdentityLoginData(stsRequestInvalidHeader.HTTPRequest, testValidRoleName)
 	if err != nil {
@@ -1581,7 +1581,7 @@ func TestBackendAcc_LoginWithCallerIdentity(t *testing.T) {
 
 	// Now, valid request against invalid role
 	stsRequestValid, _ := stsService.GetCallerIdentityRequest(stsInputParams)
-	stsRequestValid.HTTPRequest.Header.Add(iamServerIdHeader, testVaultHeaderValue)
+	stsRequestValid.HTTPRequest.Header.Add(instanceIdentityAudienceHeader, testVaultHeaderValue)
 	stsRequestValid.Sign()
 	loginData, err = buildCallerIdentityLoginData(stsRequestValid.HTTPRequest, testInvalidRoleName)
 	if err != nil {

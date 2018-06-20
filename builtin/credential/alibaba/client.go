@@ -23,12 +23,13 @@ func (b *backend) getSTSClient(ctx context.Context, s logical.Storage, regionID 
 	return sts.NewClientWithOptions(regionID, sdk.NewConfig(), credential)
 }
 
-func (b *backend) getRAMClient(ctx context.Context, s logical.Storage, regionID string) (*ram.Client, error) {
+func (b *backend) getRAMClient(ctx context.Context, s logical.Storage) (*ram.Client, error) {
 	credential, err := b.getCredential(ctx, s)
 	if err != nil {
 		return nil, err
 	}
-	return ram.NewClientWithOptions(regionID, sdk.NewConfig(), credential)
+	// TODO will this work? Just plugging a region because it doesn't matter?
+	return ram.NewClientWithOptions("us-east-1", sdk.NewConfig(), credential)
 }
 
 func (b *backend) getECSClient(ctx context.Context, s logical.Storage, regionID string) (*ecs.Client, error) {
