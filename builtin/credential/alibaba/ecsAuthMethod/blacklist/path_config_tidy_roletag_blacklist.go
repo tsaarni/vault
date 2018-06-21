@@ -1,8 +1,10 @@
-package alibaba
+package blacklist
 
 import (
 	"context"
 	"fmt"
+
+	"sync"
 
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
@@ -12,7 +14,11 @@ const (
 	roletagBlacklistConfigPath = "config/tidy/roletag-blacklist"
 )
 
-func pathConfigTidyRoletagBlacklist(b *backend) *framework.Path {
+type ConfigHandler struct {
+	configMutex sync.RWMutex
+}
+
+func (h *ConfigHandler) PathConfigTidyRoletagBlacklist() *framework.Path {
 	return &framework.Path{
 		Pattern: fmt.Sprintf("%s$", roletagBlacklistConfigPath),
 		Fields: map[string]*framework.FieldSchema{
@@ -31,13 +37,13 @@ Defaults to 4320h (180 days).`,
 			},
 		},
 
-		ExistenceCheck: b.pathConfigTidyRoletagBlacklistExistenceCheck,
+		ExistenceCheck: h.pathConfigTidyRoletagBlacklistExistenceCheck,
 
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			logical.CreateOperation: b.pathConfigTidyRoletagBlacklistCreateUpdate,
-			logical.UpdateOperation: b.pathConfigTidyRoletagBlacklistCreateUpdate,
-			logical.ReadOperation:   b.pathConfigTidyRoletagBlacklistRead,
-			logical.DeleteOperation: b.pathConfigTidyRoletagBlacklistDelete,
+			logical.CreateOperation: h.pathConfigTidyRoletagBlacklistCreateUpdate,
+			logical.UpdateOperation: h.pathConfigTidyRoletagBlacklistCreateUpdate,
+			logical.ReadOperation:   h.pathConfigTidyRoletagBlacklistRead,
+			logical.DeleteOperation: h.pathConfigTidyRoletagBlacklistDelete,
 		},
 
 		HelpSynopsis:    pathConfigTidyRoletagBlacklistHelpSyn,
@@ -45,22 +51,22 @@ Defaults to 4320h (180 days).`,
 	}
 }
 
-func (b *backend) pathConfigTidyRoletagBlacklistExistenceCheck(ctx context.Context, req *logical.Request, data *framework.FieldData) (bool, error) {
-	entry, err := b.lockedConfigTidyRoleTags(ctx, req.Storage)
+func (h *ConfigHandler) pathConfigTidyRoletagBlacklistExistenceCheck(ctx context.Context, req *logical.Request, data *framework.FieldData) (bool, error) {
+	entry, err := h.LockedConfigTidyRoleTags(ctx, req.Storage)
 	if err != nil {
 		return false, err
 	}
 	return entry != nil, nil
 }
 
-func (b *backend) lockedConfigTidyRoleTags(ctx context.Context, s logical.Storage) (*tidyBlacklistRoleTagConfig, error) {
-	b.configMutex.RLock()
-	defer b.configMutex.RUnlock()
+func (h *ConfigHandler) LockedConfigTidyRoleTags(ctx context.Context, s logical.Storage) (*tidyBlacklistRoleTagConfig, error) {
+	h.configMutex.RLock()
+	defer h.configMutex.RUnlock()
 
-	return b.nonLockedConfigTidyRoleTags(ctx, s)
+	return h.nonLockedConfigTidyRoleTags(ctx, s)
 }
 
-func (b *backend) nonLockedConfigTidyRoleTags(ctx context.Context, s logical.Storage) (*tidyBlacklistRoleTagConfig, error) {
+func (h *ConfigHandler) nonLockedConfigTidyRoleTags(ctx context.Context, s logical.Storage) (*tidyBlacklistRoleTagConfig, error) {
 	entry, err := s.Get(ctx, roletagBlacklistConfigPath)
 	if err != nil {
 		return nil, err
@@ -77,11 +83,11 @@ func (b *backend) nonLockedConfigTidyRoleTags(ctx context.Context, s logical.Sto
 	return &result, nil
 }
 
-func (b *backend) pathConfigTidyRoletagBlacklistCreateUpdate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	b.configMutex.Lock()
-	defer b.configMutex.Unlock()
+func (h *ConfigHandler) pathConfigTidyRoletagBlacklistCreateUpdate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	h.configMutex.Lock()
+	defer h.configMutex.Unlock()
 
-	configEntry, err := b.nonLockedConfigTidyRoleTags(ctx, req.Storage)
+	configEntry, err := h.nonLockedConfigTidyRoleTags(ctx, req.Storage)
 	if err != nil {
 		return nil, err
 	}
@@ -113,8 +119,8 @@ func (b *backend) pathConfigTidyRoletagBlacklistCreateUpdate(ctx context.Context
 	return nil, nil
 }
 
-func (b *backend) pathConfigTidyRoletagBlacklistRead(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	clientConfig, err := b.lockedConfigTidyRoleTags(ctx, req.Storage)
+func (h *ConfigHandler) pathConfigTidyRoletagBlacklistRead(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	clientConfig, err := h.LockedConfigTidyRoleTags(ctx, req.Storage)
 	if err != nil {
 		return nil, err
 	}
@@ -130,9 +136,9 @@ func (b *backend) pathConfigTidyRoletagBlacklistRead(ctx context.Context, req *l
 	}, nil
 }
 
-func (b *backend) pathConfigTidyRoletagBlacklistDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	b.configMutex.Lock()
-	defer b.configMutex.Unlock()
+func (h *ConfigHandler) pathConfigTidyRoletagBlacklistDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	h.configMutex.Lock()
+	defer h.configMutex.Unlock()
 
 	return nil, req.Storage.Delete(ctx, roletagBlacklistConfigPath)
 }

@@ -1,4 +1,4 @@
-package alibaba
+package whitelist
 
 import (
 	"context"
@@ -11,9 +11,13 @@ import (
 	"github.com/hashicorp/vault/logical/framework"
 )
 
-func pathTidyIdentityWhitelist(b *backend) *framework.Path {
+type TidyHandler struct {
+	tidyWhitelistCASGuard uint32
+}
+
+func (h *TidyHandler) PathTidyIdentityWhitelist() *framework.Path {
 	return &framework.Path{
-		Pattern: "tidy/identity-whitelist$",
+		Pattern: "tidy/identity-whitelistConfig$",
 		Fields: map[string]*framework.FieldSchema{
 			"safety_buffer": {
 				Type:    framework.TypeDurationSecond,
@@ -24,7 +28,7 @@ expiration, before it is removed from the backend storage.`,
 		},
 
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			logical.UpdateOperation: b.pathTidyIdentityWhitelistUpdate,
+			logical.UpdateOperation: h.pathTidyIdentityWhitelistUpdate,
 		},
 
 		HelpSynopsis:    pathTidyIdentityWhitelistSyn,
@@ -32,24 +36,24 @@ expiration, before it is removed from the backend storage.`,
 	}
 }
 
-// tidyWhitelistIdentity is used to delete entries in the whitelist that are expired.
-func (b *backend) tidyWhitelistIdentity(ctx context.Context, s logical.Storage, safety_buffer int) error {
-	grabbed := atomic.CompareAndSwapUint32(&b.tidyWhitelistCASGuard, 0, 1)
+// TidyWhitelistIdentity is used to delete entries in the whitelistConfig that are expired.
+func (h *TidyHandler) TidyWhitelistIdentity(ctx context.Context, s logical.Storage, safety_buffer int) error {
+	grabbed := atomic.CompareAndSwapUint32(&h.tidyWhitelistCASGuard, 0, 1)
 	if grabbed {
-		defer atomic.StoreUint32(&b.tidyWhitelistCASGuard, 0)
+		defer atomic.StoreUint32(&h.tidyWhitelistCASGuard, 0)
 	} else {
-		return fmt.Errorf("identity whitelist tidy operation already running")
+		return fmt.Errorf("identity whitelistConfig tidy operation already running")
 	}
 
 	bufferDuration := time.Duration(safety_buffer) * time.Second
 
-	identities, err := s.List(ctx, "whitelist/identity/")
+	identities, err := s.List(ctx, "whitelistConfig/identity/")
 	if err != nil {
 		return err
 	}
 
 	for _, instanceID := range identities {
-		identityEntry, err := s.Get(ctx, "whitelist/identity/"+instanceID)
+		identityEntry, err := s.Get(ctx, "whitelistConfig/identity/"+instanceID)
 		if err != nil {
 			return errwrap.Wrapf(fmt.Sprintf("error fetching identity of instanceID %q: {{err}}", instanceID), err)
 		}
@@ -62,13 +66,13 @@ func (b *backend) tidyWhitelistIdentity(ctx context.Context, s logical.Storage, 
 			return fmt.Errorf("found identity entry for instanceID %q but actual identity is empty", instanceID)
 		}
 
-		var result whitelistIdentity
+		var result *Identity
 		if err := identityEntry.DecodeJSON(&result); err != nil {
 			return err
 		}
 
 		if time.Now().After(result.ExpirationTime.Add(bufferDuration)) {
-			if err := s.Delete(ctx, "whitelist/identity"+instanceID); err != nil {
+			if err := s.Delete(ctx, "whitelistConfig/identity"+instanceID); err != nil {
 				return errwrap.Wrapf(fmt.Sprintf("error deleting identity of instanceID %q from storage: {{err}}", instanceID), err)
 			}
 		}
@@ -77,17 +81,17 @@ func (b *backend) tidyWhitelistIdentity(ctx context.Context, s logical.Storage, 
 	return nil
 }
 
-// pathTidyIdentityWhitelistUpdate is used to delete entries in the whitelist that are expired.
-func (b *backend) pathTidyIdentityWhitelistUpdate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	return nil, b.tidyWhitelistIdentity(ctx, req.Storage, data.Get("safety_buffer").(int))
+// pathTidyIdentityWhitelistUpdate is used to delete entries in the whitelistConfig that are expired.
+func (h *TidyHandler) pathTidyIdentityWhitelistUpdate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	return nil, h.TidyWhitelistIdentity(ctx, req.Storage, data.Get("safety_buffer").(int))
 }
 
 const pathTidyIdentityWhitelistSyn = `
-Clean-up the whitelist instance identity entries.
+Clean-up the whitelistConfig instance identity entries.
 `
 
 const pathTidyIdentityWhitelistDesc = `
-When an instance identity is whitelisted, the expiration time of the whitelist
+When an instance identity is whitelisted, the expiration time of the whitelistConfig
 entry is set based on the maximum 'max_ttl' value set on: the role, the role tag
 and the backend's mount.
 

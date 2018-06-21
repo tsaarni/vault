@@ -1,8 +1,9 @@
-package alibaba
+package whitelist
 
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
@@ -12,7 +13,11 @@ const (
 	identityWhitelistConfigPath = "config/tidy/identity-whitelist"
 )
 
-func pathConfigTidyIdentityWhitelist(b *backend) *framework.Path {
+type ConfigHandler struct {
+	configMutex sync.RWMutex
+}
+
+func (h *ConfigHandler) PathConfigTidyIdentityWhitelist() *framework.Path {
 	return &framework.Path{
 		Pattern: fmt.Sprintf("%s$", identityWhitelistConfigPath),
 		Fields: map[string]*framework.FieldSchema{
@@ -29,13 +34,13 @@ expiration, before it is removed from the backend storage.`,
 			},
 		},
 
-		ExistenceCheck: b.pathConfigTidyIdentityWhitelistExistenceCheck,
+		ExistenceCheck: h.pathConfigTidyIdentityWhitelistExistenceCheck,
 
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			logical.CreateOperation: b.pathConfigTidyIdentityWhitelistCreateUpdate,
-			logical.UpdateOperation: b.pathConfigTidyIdentityWhitelistCreateUpdate,
-			logical.ReadOperation:   b.pathConfigTidyIdentityWhitelistRead,
-			logical.DeleteOperation: b.pathConfigTidyIdentityWhitelistDelete,
+			logical.CreateOperation: h.pathConfigTidyIdentityWhitelistCreateUpdate,
+			logical.UpdateOperation: h.pathConfigTidyIdentityWhitelistCreateUpdate,
+			logical.ReadOperation:   h.pathConfigTidyIdentityWhitelistRead,
+			logical.DeleteOperation: h.pathConfigTidyIdentityWhitelistDelete,
 		},
 
 		HelpSynopsis:    pathConfigTidyIdentityWhitelistHelpSyn,
@@ -43,22 +48,22 @@ expiration, before it is removed from the backend storage.`,
 	}
 }
 
-func (b *backend) pathConfigTidyIdentityWhitelistExistenceCheck(ctx context.Context, req *logical.Request, data *framework.FieldData) (bool, error) {
-	entry, err := b.lockedConfigTidyIdentities(ctx, req.Storage)
+func (h *ConfigHandler) pathConfigTidyIdentityWhitelistExistenceCheck(ctx context.Context, req *logical.Request, data *framework.FieldData) (bool, error) {
+	entry, err := h.LockedConfigTidyIdentities(ctx, req.Storage)
 	if err != nil {
 		return false, err
 	}
 	return entry != nil, nil
 }
 
-func (b *backend) lockedConfigTidyIdentities(ctx context.Context, s logical.Storage) (*tidyWhitelistIdentityConfig, error) {
-	b.configMutex.RLock()
-	defer b.configMutex.RUnlock()
+func (h *ConfigHandler) LockedConfigTidyIdentities(ctx context.Context, s logical.Storage) (*tidyWhitelistIdentityConfig, error) {
+	h.configMutex.RLock()
+	defer h.configMutex.RUnlock()
 
-	return b.nonLockedConfigTidyIdentities(ctx, s)
+	return h.nonLockedConfigTidyIdentities(ctx, s)
 }
 
-func (b *backend) nonLockedConfigTidyIdentities(ctx context.Context, s logical.Storage) (*tidyWhitelistIdentityConfig, error) {
+func (h *ConfigHandler) nonLockedConfigTidyIdentities(ctx context.Context, s logical.Storage) (*tidyWhitelistIdentityConfig, error) {
 	entry, err := s.Get(ctx, identityWhitelistConfigPath)
 	if err != nil {
 		return nil, err
@@ -74,11 +79,11 @@ func (b *backend) nonLockedConfigTidyIdentities(ctx context.Context, s logical.S
 	return &result, nil
 }
 
-func (b *backend) pathConfigTidyIdentityWhitelistCreateUpdate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	b.configMutex.Lock()
-	defer b.configMutex.Unlock()
+func (h *ConfigHandler) pathConfigTidyIdentityWhitelistCreateUpdate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	h.configMutex.Lock()
+	defer h.configMutex.Unlock()
 
-	configEntry, err := b.nonLockedConfigTidyIdentities(ctx, req.Storage)
+	configEntry, err := h.nonLockedConfigTidyIdentities(ctx, req.Storage)
 	if err != nil {
 		return nil, err
 	}
@@ -112,8 +117,8 @@ func (b *backend) pathConfigTidyIdentityWhitelistCreateUpdate(ctx context.Contex
 	return nil, nil
 }
 
-func (b *backend) pathConfigTidyIdentityWhitelistRead(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	clientConfig, err := b.lockedConfigTidyIdentities(ctx, req.Storage)
+func (h *ConfigHandler) pathConfigTidyIdentityWhitelistRead(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	clientConfig, err := h.LockedConfigTidyIdentities(ctx, req.Storage)
 	if err != nil {
 		return nil, err
 	}
@@ -129,9 +134,9 @@ func (b *backend) pathConfigTidyIdentityWhitelistRead(ctx context.Context, req *
 	}, nil
 }
 
-func (b *backend) pathConfigTidyIdentityWhitelistDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	b.configMutex.Lock()
-	defer b.configMutex.Unlock()
+func (h *ConfigHandler) pathConfigTidyIdentityWhitelistDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	h.configMutex.Lock()
+	defer h.configMutex.Unlock()
 
 	return nil, req.Storage.Delete(ctx, identityWhitelistConfigPath)
 }

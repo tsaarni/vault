@@ -1,4 +1,4 @@
-package alibaba
+package whitelist
 
 import (
 	"context"
@@ -8,7 +8,9 @@ import (
 	"github.com/hashicorp/vault/logical/framework"
 )
 
-func pathIdentityWhitelist(b *backend) *framework.Path {
+type Handler struct{}
+
+func (h *Handler) PathIdentityWhitelist() *framework.Path {
 	return &framework.Path{
 		Pattern: "identity-whitelist/" + framework.GenericNameRegex("instance_id"),
 		Fields: map[string]*framework.FieldSchema{
@@ -20,8 +22,8 @@ gets cached in this whitelist, keyed off of instance ID.`,
 		},
 
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			logical.ReadOperation:   b.pathIdentityWhitelistRead,
-			logical.DeleteOperation: b.pathIdentityWhitelistDelete,
+			logical.ReadOperation:   pathIdentityWhitelistRead,
+			logical.DeleteOperation: pathIdentityWhitelistDelete,
 		},
 
 		HelpSynopsis:    pathIdentityWhitelistSyn,
@@ -29,12 +31,12 @@ gets cached in this whitelist, keyed off of instance ID.`,
 	}
 }
 
-func pathListIdentityWhitelist(b *backend) *framework.Path {
+func (h *Handler) PathListIdentityWhitelist() *framework.Path {
 	return &framework.Path{
 		Pattern: "identity-whitelist/?",
 
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			logical.ListOperation: b.pathWhitelistIdentitiesList,
+			logical.ListOperation: pathWhitelistIdentitiesList,
 		},
 
 		HelpSynopsis:    pathListIdentityWhitelistHelpSyn,
@@ -44,7 +46,7 @@ func pathListIdentityWhitelist(b *backend) *framework.Path {
 
 // pathWhitelistIdentitiesList is used to list all the instance IDs that are present
 // in the identity whitelist. This will list both valid and expired entries.
-func (b *backend) pathWhitelistIdentitiesList(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+func pathWhitelistIdentitiesList(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	identities, err := req.Storage.List(ctx, "whitelist/identity/")
 	if err != nil {
 		return nil, err
@@ -53,7 +55,7 @@ func (b *backend) pathWhitelistIdentitiesList(ctx context.Context, req *logical.
 }
 
 // Fetch an item from the whitelist given an instance ID.
-func whitelistIdentityEntry(ctx context.Context, s logical.Storage, instanceID string) (*whitelistIdentity, error) {
+func GetIdentity(ctx context.Context, s logical.Storage, instanceID string) (*Identity, error) {
 	entry, err := s.Get(ctx, "whitelist/identity/"+instanceID)
 	if err != nil {
 		return nil, err
@@ -62,7 +64,7 @@ func whitelistIdentityEntry(ctx context.Context, s logical.Storage, instanceID s
 		return nil, nil
 	}
 
-	var result whitelistIdentity
+	var result Identity
 	if err := entry.DecodeJSON(&result); err != nil {
 		return nil, err
 	}
@@ -71,7 +73,7 @@ func whitelistIdentityEntry(ctx context.Context, s logical.Storage, instanceID s
 
 // Stores an instance ID and the information required to validate further login/renewal attempts from
 // the same instance ID.
-func setWhitelistIdentityEntry(ctx context.Context, s logical.Storage, instanceID string, identity *whitelistIdentity) error {
+func SetIdentity(ctx context.Context, s logical.Storage, instanceID string, identity *Identity) error {
 	entry, err := logical.StorageEntryJSON("whitelist/identity/"+instanceID, identity)
 	if err != nil {
 		return err
@@ -84,7 +86,7 @@ func setWhitelistIdentityEntry(ctx context.Context, s logical.Storage, instanceI
 }
 
 // pathIdentityWhitelistDelete is used to delete an entry from the identity whitelist given an instance ID.
-func (b *backend) pathIdentityWhitelistDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+func pathIdentityWhitelistDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	instanceID := data.Get("instance_id").(string)
 	if instanceID == "" {
 		return logical.ErrorResponse("missing instance_id"), nil
@@ -94,13 +96,13 @@ func (b *backend) pathIdentityWhitelistDelete(ctx context.Context, req *logical.
 }
 
 // pathIdentityWhitelistRead is used to view an entry in the identity whitelist given an instance ID.
-func (b *backend) pathIdentityWhitelistRead(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+func pathIdentityWhitelistRead(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	instanceID := data.Get("instance_id").(string)
 	if instanceID == "" {
 		return logical.ErrorResponse("missing instance_id"), nil
 	}
 
-	entry, err := whitelistIdentityEntry(ctx, req.Storage, instanceID)
+	entry, err := GetIdentity(ctx, req.Storage, instanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +124,7 @@ func (b *backend) pathIdentityWhitelistRead(ctx context.Context, req *logical.Re
 }
 
 // Struct to represent each item in the identity whitelist.
-type whitelistIdentity struct {
+type Identity struct {
 	Role                     string    `json:"role"`
 	ClientNonce              string    `json:"client_nonce"`
 	CreationTime             time.Time `json:"creation_time"`

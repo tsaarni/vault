@@ -1,15 +1,26 @@
-package alibaba
+package blacklist
 
 import (
 	"context"
 	"encoding/base64"
 	"time"
 
+	"sync"
+
+	"github.com/hashicorp/vault/builtin/credential/alibaba/common"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 )
 
-func pathRoletagBlacklist(b *backend) *framework.Path {
+type Handler struct {
+	RoleMgr *common.RoleManager
+	System  logical.SystemView
+
+	// Lock to make changes to the blacklist entries
+	blacklistMutex sync.RWMutex
+}
+
+func (h *Handler) PathRoletagBlacklist() *framework.Path {
 	return &framework.Path{
 		Pattern: "roletag-blacklist/(?P<role_tag>.*)",
 		Fields: map[string]*framework.FieldSchema{
@@ -21,9 +32,9 @@ to avoid any encoding problems, it can be base64 encoded.`,
 		},
 
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			logical.UpdateOperation: b.pathRoletagBlacklistUpdate,
-			logical.ReadOperation:   b.pathRoletagBlacklistRead,
-			logical.DeleteOperation: b.pathRoletagBlacklistDelete,
+			logical.UpdateOperation: h.pathRoletagBlacklistUpdate,
+			logical.ReadOperation:   h.pathRoletagBlacklistRead,
+			logical.DeleteOperation: h.pathRoletagBlacklistDelete,
 		},
 
 		HelpSynopsis:    pathRoletagBlacklistSyn,
@@ -32,12 +43,12 @@ to avoid any encoding problems, it can be base64 encoded.`,
 }
 
 // Path to list all the blacklisted tags.
-func pathListRoletagBlacklist(b *backend) *framework.Path {
+func (h *Handler) PathListRoletagBlacklist() *framework.Path {
 	return &framework.Path{
 		Pattern: "roletag-blacklist/?",
 
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			logical.ListOperation: b.pathRoletagBlacklistsList,
+			logical.ListOperation: h.pathRoletagBlacklistsList,
 		},
 
 		HelpSynopsis:    pathListRoletagBlacklistHelpSyn,
@@ -46,9 +57,9 @@ func pathListRoletagBlacklist(b *backend) *framework.Path {
 }
 
 // Lists all the blacklisted role tags.
-func (b *backend) pathRoletagBlacklistsList(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	b.blacklistMutex.RLock()
-	defer b.blacklistMutex.RUnlock()
+func (h *Handler) pathRoletagBlacklistsList(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	h.blacklistMutex.RLock()
+	defer h.blacklistMutex.RUnlock()
 
 	tags, err := req.Storage.List(ctx, "blacklist/roletag/")
 	if err != nil {
@@ -71,14 +82,14 @@ func (b *backend) pathRoletagBlacklistsList(ctx context.Context, req *logical.Re
 
 // Fetch an entry from the role tag blacklist for a given tag.
 // This method takes a role tag in its original form and not a base64 encoded form.
-func (b *backend) lockedBlacklistRoleTagEntry(ctx context.Context, s logical.Storage, tag string) (*roleTagBlacklistEntry, error) {
-	b.blacklistMutex.RLock()
-	defer b.blacklistMutex.RUnlock()
+func (h *Handler) LockedBlacklistRoleTagEntry(ctx context.Context, s logical.Storage, tag string) (*roleTagBlacklistEntry, error) {
+	h.blacklistMutex.RLock()
+	defer h.blacklistMutex.RUnlock()
 
-	return b.nonLockedBlacklistRoleTagEntry(ctx, s, tag)
+	return h.nonLockedBlacklistRoleTagEntry(ctx, s, tag)
 }
 
-func (b *backend) nonLockedBlacklistRoleTagEntry(ctx context.Context, s logical.Storage, tag string) (*roleTagBlacklistEntry, error) {
+func (h *Handler) nonLockedBlacklistRoleTagEntry(ctx context.Context, s logical.Storage, tag string) (*roleTagBlacklistEntry, error) {
 	entry, err := s.Get(ctx, "blacklist/roletag/"+base64.StdEncoding.EncodeToString([]byte(tag)))
 	if err != nil {
 		return nil, err
@@ -95,9 +106,9 @@ func (b *backend) nonLockedBlacklistRoleTagEntry(ctx context.Context, s logical.
 }
 
 // Deletes an entry from the role tag blacklist for a given tag.
-func (b *backend) pathRoletagBlacklistDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	b.blacklistMutex.Lock()
-	defer b.blacklistMutex.Unlock()
+func (h *Handler) pathRoletagBlacklistDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	h.blacklistMutex.Lock()
+	defer h.blacklistMutex.Unlock()
 
 	tag := data.Get("role_tag").(string)
 	if tag == "" {
@@ -109,13 +120,13 @@ func (b *backend) pathRoletagBlacklistDelete(ctx context.Context, req *logical.R
 
 // If the given role tag is blacklisted, returns the details of the blacklist entry.
 // Returns 'nil' otherwise.
-func (b *backend) pathRoletagBlacklistRead(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+func (h *Handler) pathRoletagBlacklistRead(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	tag := data.Get("role_tag").(string)
 	if tag == "" {
 		return logical.ErrorResponse("missing role_tag"), nil
 	}
 
-	entry, err := b.lockedBlacklistRoleTagEntry(ctx, req.Storage, tag)
+	entry, err := h.LockedBlacklistRoleTagEntry(ctx, req.Storage, tag)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +145,7 @@ func (b *backend) pathRoletagBlacklistRead(ctx context.Context, req *logical.Req
 // pathRoletagBlacklistUpdate is used to blacklist a given role tag.
 // Before a role tag is blacklisted, the correctness of the plaintext part
 // in the role tag is verified using the associated HMAC.
-func (b *backend) pathRoletagBlacklistUpdate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+func (h *Handler) pathRoletagBlacklistUpdate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	// The role_tag value provided, optionally can be base64 encoded.
 	tagInput := data.Get("role_tag").(string)
 	if tagInput == "" {
@@ -154,7 +165,7 @@ func (b *backend) pathRoletagBlacklistUpdate(ctx context.Context, req *logical.R
 	}
 
 	// Parse and verify the role tag from string form to a struct form and verify it.
-	rTag, err := b.parseAndVerifyRoleTagValue(ctx, req.Storage, tag)
+	rTag, err := h.RoleMgr.ParseAndVerifyRoleTagValue(ctx, req.Storage, tag)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +174,7 @@ func (b *backend) pathRoletagBlacklistUpdate(ctx context.Context, req *logical.R
 	}
 
 	// Get the entry for the role mentioned in the role tag.
-	roleEntry, err := b.lockedAWSRole(ctx, req.Storage, rTag.Role)
+	roleEntry, err := h.RoleMgr.Read(ctx, req.Storage, rTag.Role)
 	if err != nil {
 		return nil, err
 	}
@@ -171,11 +182,11 @@ func (b *backend) pathRoletagBlacklistUpdate(ctx context.Context, req *logical.R
 		return logical.ErrorResponse("role entry not found"), nil
 	}
 
-	b.blacklistMutex.Lock()
-	defer b.blacklistMutex.Unlock()
+	h.blacklistMutex.Lock()
+	defer h.blacklistMutex.Unlock()
 
 	// Check if the role tag is already blacklisted. If yes, update it.
-	blEntry, err := b.nonLockedBlacklistRoleTagEntry(ctx, req.Storage, tag)
+	blEntry, err := h.nonLockedBlacklistRoleTagEntry(ctx, req.Storage, tag)
 	if err != nil {
 		return nil, err
 	}
@@ -199,8 +210,8 @@ func (b *backend) pathRoletagBlacklistUpdate(ctx context.Context, req *logical.R
 	if roleEntry.MaxTTL > maxDur {
 		maxDur = roleEntry.MaxTTL
 	}
-	if b.System().MaxLeaseTTL() > maxDur {
-		maxDur = b.System().MaxLeaseTTL()
+	if h.System.MaxLeaseTTL() > maxDur {
+		maxDur = h.System.MaxLeaseTTL()
 	}
 
 	blEntry.ExpirationTime = currentTime.Add(maxDur)

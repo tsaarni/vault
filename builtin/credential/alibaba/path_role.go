@@ -8,6 +8,7 @@ import (
 
 	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/go-uuid"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/common"
 	"github.com/hashicorp/vault/helper/policyutil"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
@@ -155,9 +156,9 @@ auth_type is ec2.`,
 				Type:    framework.TypeBool,
 				Default: false,
 				Description: `If set, only allows a single token to be granted per
-        instance ID. In order to perform a fresh login, the entry in whitelist
+        instance ID. In order to perform a fresh login, the entry in whitelistConfig
         for the instance ID needs to be cleared using
-        'auth/aws-ec2/identity-whitelist/<instance_id>' endpoint. This is only
+        'auth/aws-ec2/identity-whitelistConfig/<instance_id>' endpoint. This is only
         applicable when auth_type is ec2.`,
 			},
 		},
@@ -205,92 +206,11 @@ func pathListRoles(b *backend) *framework.Path {
 // Establishes dichotomy of request operation between CreateOperation and UpdateOperation.
 // Returning 'true' forces an UpdateOperation, CreateOperation otherwise.
 func (b *backend) pathRoleExistenceCheck(ctx context.Context, req *logical.Request, data *framework.FieldData) (bool, error) {
-	entry, err := b.lockedAWSRole(ctx, req.Storage, strings.ToLower(data.Get("role").(string)))
+	entry, err := b.roleMgr.Read(ctx, req.Storage, strings.ToLower(data.Get("role").(string)))
 	if err != nil {
 		return false, err
 	}
 	return entry != nil, nil
-}
-
-// lockedAWSRole returns the properties set on the given role. This method
-// acquires the read lock before reading the role from the storage.
-func (b *backend) lockedAWSRole(ctx context.Context, s logical.Storage, roleName string) (*awsRoleEntry, error) {
-	if roleName == "" {
-		return nil, fmt.Errorf("missing role name")
-	}
-
-	b.roleMutex.RLock()
-	defer b.roleMutex.RUnlock()
-	return b.nonLockedAWSRole(ctx, s, roleName)
-}
-
-// lockedSetAWSRole creates or updates a role in the storage. This method
-// acquires the write lock before creating or updating the role at the storage.
-func (b *backend) lockedSetAWSRole(ctx context.Context, s logical.Storage, roleName string, roleEntry *awsRoleEntry) error {
-	if roleName == "" {
-		return fmt.Errorf("missing role name")
-	}
-
-	if roleEntry == nil {
-		return fmt.Errorf("nil role entry")
-	}
-
-	b.roleMutex.Lock()
-	defer b.roleMutex.Unlock()
-
-	return b.nonLockedSetAWSRole(ctx, s, roleName, roleEntry)
-}
-
-// nonLockedSetAWSRole creates or updates a role in the storage. This method
-// does not acquire the write lock before reading the role from the storage. If
-// locking is desired, use lockedSetAWSRole instead.
-func (b *backend) nonLockedSetAWSRole(ctx context.Context, s logical.Storage, roleName string,
-	roleEntry *awsRoleEntry) error {
-	if roleName == "" {
-		return fmt.Errorf("missing role name")
-	}
-
-	if roleEntry == nil {
-		return fmt.Errorf("nil role entry")
-	}
-
-	entry, err := logical.StorageEntryJSON("role/"+strings.ToLower(roleName), roleEntry)
-	if err != nil {
-		return err
-	}
-
-	if err := s.Put(ctx, entry); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// nonLockedAWSRole returns the properties set on the given role. This method
-// does not acquire the read lock before reading the role from the storage. If
-// locking is desired, use lockedAWSRole instead.
-// This method also does NOT check to see if a role upgrade is required. It is
-// the responsibility of the caller to check if a role upgrade is required and,
-// if so, to upgrade the role
-func (b *backend) nonLockedAWSRole(ctx context.Context, s logical.Storage, roleName string) (*awsRoleEntry, error) {
-	if roleName == "" {
-		return nil, fmt.Errorf("missing role name")
-	}
-
-	entry, err := s.Get(ctx, "role/"+strings.ToLower(roleName))
-	if err != nil {
-		return nil, err
-	}
-	if entry == nil {
-		return nil, nil
-	}
-
-	var result awsRoleEntry
-	if err := entry.DecodeJSON(&result); err != nil {
-		return nil, err
-	}
-
-	return &result, nil
 }
 
 // pathRoleDelete is used to delete the information registered for a given AMI ID.
@@ -299,19 +219,12 @@ func (b *backend) pathRoleDelete(ctx context.Context, req *logical.Request, data
 	if roleName == "" {
 		return logical.ErrorResponse("missing role"), nil
 	}
-
-	b.roleMutex.Lock()
-	defer b.roleMutex.Unlock()
-
-	return nil, req.Storage.Delete(ctx, "role/"+strings.ToLower(roleName))
+	return nil, b.roleMgr.Delete(ctx, req.Storage, roleName)
 }
 
 // pathRoleList is used to list all the AMI IDs registered with Vault.
 func (b *backend) pathRoleList(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	b.roleMutex.RLock()
-	defer b.roleMutex.RUnlock()
-
-	roles, err := req.Storage.List(ctx, "role/")
+	roles, err := b.roleMgr.List(ctx, req.Storage)
 	if err != nil {
 		return nil, err
 	}
@@ -320,7 +233,7 @@ func (b *backend) pathRoleList(ctx context.Context, req *logical.Request, data *
 
 // pathRoleRead is used to view the information registered for a given AMI ID.
 func (b *backend) pathRoleRead(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	roleEntry, err := b.lockedAWSRole(ctx, req.Storage, strings.ToLower(data.Get("role").(string)))
+	roleEntry, err := b.roleMgr.Read(ctx, req.Storage, strings.ToLower(data.Get("role").(string)))
 	if err != nil {
 		return nil, err
 	}
@@ -340,15 +253,12 @@ func (b *backend) pathRoleCreateUpdate(ctx context.Context, req *logical.Request
 		return logical.ErrorResponse("missing role"), nil
 	}
 
-	b.roleMutex.Lock()
-	defer b.roleMutex.Unlock()
-
-	roleEntry, err := b.nonLockedAWSRole(ctx, req.Storage, roleName)
+	roleEntry, err := b.roleMgr.Read(ctx, req.Storage, roleName)
 	if err != nil {
 		return nil, err
 	}
 	if roleEntry == nil {
-		roleEntry = &awsRoleEntry{}
+		roleEntry = &common.RoleEntry{}
 	}
 
 	// Fetch and set the bound parameters. There can't be default values
@@ -624,8 +534,8 @@ func (b *backend) pathRoleCreateUpdate(ctx context.Context, req *logical.Request
 			return nil, errwrap.Wrapf("failed to generate role HMAC key: {{err}}", err)
 		}
 	}
-
-	if err := b.nonLockedSetAWSRole(ctx, req.Storage, roleName, roleEntry); err != nil {
+	// TODO between read and update time, should we be holding the lock? The previous code did.
+	if err := b.roleMgr.Update(ctx, req.Storage, roleName, roleEntry); err != nil {
 		return nil, err
 	}
 
@@ -634,72 +544,6 @@ func (b *backend) pathRoleCreateUpdate(ctx context.Context, req *logical.Request
 	}
 
 	return &resp, nil
-}
-
-// Struct to hold the information associated with a Vault role
-type awsRoleEntry struct {
-	AuthType                 string        `json:"auth_type" `
-	BoundAmiIDs              []string      `json:"bound_ami_id_list"`
-	BoundAccountIDs          []string      `json:"bound_account_id_list"`
-	BoundEc2InstanceIDs      []string      `json:"bound_ec2_instance_id_list"`
-	BoundIamPrincipalARNs    []string      `json:"bound_iam_principal_arn_list"`
-	BoundIamPrincipalIDs     []string      `json:"bound_iam_principal_id_list"`
-	BoundIamRoleARNs         []string      `json:"bound_iam_role_arn_list"`
-	BoundRegions             []string      `json:"bound_region_list"`
-	BoundVSwitchIDs          []string      `json:"bound_vswitch_id_list"`
-	BoundVpcIDs              []string      `json:"bound_vpc_id_list"`
-	InferredEntityType       string        `json:"inferred_entity_type"`
-	InferredAWSRegion        string        `json:"inferred_aws_region"`
-	ResolveAWSUniqueIDs      bool          `json:"resolve_aws_unique_ids"`
-	RoleTag                  string        `json:"role_tag"`
-	AllowInstanceMigration   bool          `json:"allow_instance_migration"`
-	TTL                      time.Duration `json:"ttl"`
-	MaxTTL                   time.Duration `json:"max_ttl"`
-	Policies                 []string      `json:"policies"`
-	DisallowReauthentication bool          `json:"disallow_reauthentication"`
-	HMACKey                  string        `json:"hmac_key"`
-	Period                   time.Duration `json:"period"`
-}
-
-func (r *awsRoleEntry) ToResponseData() map[string]interface{} {
-	responseData := map[string]interface{}{
-		"auth_type":                r.AuthType,
-		"bound_ami_id":             r.BoundAmiIDs,
-		"bound_account_id":         r.BoundAccountIDs,
-		"bound_ec2_instance_id":    r.BoundEc2InstanceIDs,
-		"bound_iam_principal_arn":  r.BoundIamPrincipalARNs,
-		"bound_iam_principal_id":   r.BoundIamPrincipalIDs,
-		"bound_iam_role_arn":       r.BoundIamRoleARNs,
-		"bound_region":             r.BoundRegions,
-		"bound_subnet_id":          r.BoundVSwitchIDs,
-		"bound_vpc_id":             r.BoundVpcIDs,
-		"inferred_entity_type":     r.InferredEntityType,
-		"inferred_aws_region":      r.InferredAWSRegion,
-		"resolve_aws_unique_ids":   r.ResolveAWSUniqueIDs,
-		"role_tag":                 r.RoleTag,
-		"allow_instance_migration": r.AllowInstanceMigration,
-		"ttl":                       r.TTL / time.Second,
-		"max_ttl":                   r.MaxTTL / time.Second,
-		"policies":                  r.Policies,
-		"disallow_reauthentication": r.DisallowReauthentication,
-		"period":                    r.Period / time.Second,
-	}
-
-	convertNilToEmptySlice := func(data map[string]interface{}, field string) {
-		if data[field] == nil || len(data[field].([]string)) == 0 {
-			data[field] = []string{}
-		}
-	}
-	convertNilToEmptySlice(responseData, "bound_ami_id")
-	convertNilToEmptySlice(responseData, "bound_account_id")
-	convertNilToEmptySlice(responseData, "bound_iam_principal_arn")
-	convertNilToEmptySlice(responseData, "bound_iam_principal_id")
-	convertNilToEmptySlice(responseData, "bound_iam_role_arn")
-	convertNilToEmptySlice(responseData, "bound_region")
-	convertNilToEmptySlice(responseData, "bound_subnet_id")
-	convertNilToEmptySlice(responseData, "bound_vpc_id")
-
-	return responseData
 }
 
 const pathRoleSyn = `

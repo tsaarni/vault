@@ -2,23 +2,18 @@ package alibaba
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/hashicorp/go-uuid"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/common"
 	"github.com/hashicorp/vault/helper/policyutil"
 	"github.com/hashicorp/vault/helper/strutil"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 )
-
-const roleTagVersion = "v1"
 
 func pathRoleTag(b *backend) *framework.Path {
 	return &framework.Path{
@@ -55,7 +50,7 @@ If set, the created tag can only be used by the instance with the given ID.`,
 			"disallow_reauthentication": {
 				Type:        framework.TypeBool,
 				Default:     false,
-				Description: "If set, only allows a single token to be granted per instance ID. In order to perform a fresh login, the entry in whitelist for the instance ID needs to be cleared using the 'auth/aws-ec2/identity-whitelist/<instance_id>' endpoint.",
+				Description: "If set, only allows a single token to be granted per instance ID. In order to perform a fresh login, the entry in whitelistConfig for the instance ID needs to be cleared using the 'auth/aws-ec2/identity-whitelistConfig/<instance_id>' endpoint.",
 			},
 		},
 
@@ -77,7 +72,7 @@ func (b *backend) pathRoleTagUpdate(ctx context.Context, req *logical.Request, d
 	}
 
 	// Fetch the role entry
-	roleEntry, err := b.lockedAWSRole(ctx, req.Storage, roleName)
+	roleEntry, err := b.roleMgr.Read(ctx, req.Storage, roleName)
 	if err != nil {
 		return nil, err
 	}
@@ -150,8 +145,8 @@ func (b *backend) pathRoleTagUpdate(ctx context.Context, req *logical.Request, d
 	}
 
 	// Create a role tag out of all the information provided.
-	rTagValue, err := createRoleTagValue(&roleTag{
-		Version:                  roleTagVersion,
+	rTagValue, err := createRoleTagValue(&common.RoleTag{
+		Version:                  common.RoleTagVersion,
 		Role:                     roleName,
 		Nonce:                    nonce,
 		Policies:                 policies,
@@ -176,7 +171,7 @@ func (b *backend) pathRoleTagUpdate(ctx context.Context, req *logical.Request, d
 
 // createRoleTagValue prepares the plaintext version of the role tag,
 // and appends a HMAC of the plaintext value to it, before returning.
-func createRoleTagValue(rTag *roleTag, roleEntry *awsRoleEntry) (string, error) {
+func createRoleTagValue(rTag *common.RoleTag, roleEntry *common.RoleEntry) (string, error) {
 	if rTag == nil {
 		return "", fmt.Errorf("nil role tag")
 	}
@@ -186,7 +181,7 @@ func createRoleTagValue(rTag *roleTag, roleEntry *awsRoleEntry) (string, error) 
 	}
 
 	// Attach version, nonce, policies and maxTTL to the role tag value.
-	rTagPlaintext, err := prepareRoleTagPlaintextValue(rTag)
+	rTagPlaintext, err := common.PrepareRoleTagPlaintextValue(rTag)
 	if err != nil {
 		return "", err
 	}
@@ -197,7 +192,7 @@ func createRoleTagValue(rTag *roleTag, roleEntry *awsRoleEntry) (string, error) 
 
 // Takes in the plaintext part of the role tag, creates a HMAC of it and returns
 // a role tag value containing both the plaintext part and the HMAC part.
-func appendHMAC(rTagPlaintext string, roleEntry *awsRoleEntry) (string, error) {
+func appendHMAC(rTagPlaintext string, roleEntry *common.RoleEntry) (string, error) {
 	if rTagPlaintext == "" {
 		return "", fmt.Errorf("empty role tag plaintext string")
 	}
@@ -207,7 +202,7 @@ func appendHMAC(rTagPlaintext string, roleEntry *awsRoleEntry) (string, error) {
 	}
 
 	// Create the HMAC of the value
-	hmacB64, err := createRoleTagHMACBase64(roleEntry.HMACKey, rTagPlaintext)
+	hmacB64, err := common.CreateRoleTagHMACBase64(roleEntry.HMACKey, rTagPlaintext)
 	if err != nil {
 		return "", err
 	}
@@ -223,164 +218,6 @@ func appendHMAC(rTagPlaintext string, roleEntry *awsRoleEntry) (string, error) {
 	return rTagValue, nil
 }
 
-// verifyRoleTagValue rebuilds the role tag's plaintext part, computes the HMAC
-// from it using the role specific HMAC key and compares it with the received HMAC.
-func verifyRoleTagValue(rTag *roleTag, roleEntry *awsRoleEntry) (bool, error) {
-	if rTag == nil {
-		return false, fmt.Errorf("nil role tag")
-	}
-
-	if roleEntry == nil {
-		return false, fmt.Errorf("nil role entry")
-	}
-
-	// Fetch the plaintext part of role tag
-	rTagPlaintext, err := prepareRoleTagPlaintextValue(rTag)
-	if err != nil {
-		return false, err
-	}
-
-	// Compute the HMAC of the plaintext
-	hmacB64, err := createRoleTagHMACBase64(roleEntry.HMACKey, rTagPlaintext)
-	if err != nil {
-		return false, err
-	}
-
-	return subtle.ConstantTimeCompare([]byte(rTag.HMAC), []byte(hmacB64)) == 1, nil
-}
-
-// prepareRoleTagPlaintextValue builds the role tag value without the HMAC in it.
-func prepareRoleTagPlaintextValue(rTag *roleTag) (string, error) {
-	if rTag == nil {
-		return "", fmt.Errorf("nil role tag")
-	}
-	if rTag.Version == "" {
-		return "", fmt.Errorf("missing version")
-	}
-	if rTag.Nonce == "" {
-		return "", fmt.Errorf("missing nonce")
-	}
-	if rTag.Role == "" {
-		return "", fmt.Errorf("missing role")
-	}
-
-	// Attach Version, Nonce, Role, DisallowReauthentication and AllowInstanceMigration
-	// fields to the role tag.
-	value := fmt.Sprintf("%s:%s:r=%s:d=%s:m=%s", rTag.Version, rTag.Nonce, rTag.Role, strconv.FormatBool(rTag.DisallowReauthentication), strconv.FormatBool(rTag.AllowInstanceMigration))
-
-	// Attach the policies only if they are specified.
-	if len(rTag.Policies) != 0 {
-		value = fmt.Sprintf("%s:p=%s", value, strings.Join(rTag.Policies, ","))
-	}
-
-	// Attach instance_id if set.
-	if rTag.InstanceID != "" {
-		value = fmt.Sprintf("%s:i=%s", value, rTag.InstanceID)
-	}
-
-	// Attach max_ttl if it is provided.
-	if int(rTag.MaxTTL.Seconds()) > 0 {
-		value = fmt.Sprintf("%s:t=%d", value, int(rTag.MaxTTL.Seconds()))
-	}
-
-	return value, nil
-}
-
-// Parses the tag from string form into a struct form. This method
-// also verifies the correctness of the parsed role tag.
-func (b *backend) parseAndVerifyRoleTagValue(ctx context.Context, s logical.Storage, tag string) (*roleTag, error) {
-	tagItems := strings.Split(tag, ":")
-
-	// Tag must contain version, nonce, policies and HMAC
-	if len(tagItems) < 4 {
-		return nil, fmt.Errorf("invalid tag")
-	}
-
-	rTag := &roleTag{}
-
-	// Cache the HMAC value. The last item in the collection.
-	rTag.HMAC = tagItems[len(tagItems)-1]
-
-	// Remove the HMAC from the list.
-	tagItems = tagItems[:len(tagItems)-1]
-
-	// Version will be the first element.
-	rTag.Version = tagItems[0]
-	if rTag.Version != roleTagVersion {
-		return nil, fmt.Errorf("invalid role tag version")
-	}
-
-	// Nonce will be the second element.
-	rTag.Nonce = tagItems[1]
-
-	// Delete the version and nonce from the list.
-	tagItems = tagItems[2:]
-
-	for _, tagItem := range tagItems {
-		var err error
-		switch {
-		case strings.HasPrefix(tagItem, "i="):
-			rTag.InstanceID = strings.TrimPrefix(tagItem, "i=")
-		case strings.HasPrefix(tagItem, "r="):
-			rTag.Role = strings.TrimPrefix(tagItem, "r=")
-		case strings.HasPrefix(tagItem, "p="):
-			rTag.Policies = strings.Split(strings.TrimPrefix(tagItem, "p="), ",")
-		case strings.HasPrefix(tagItem, "d="):
-			rTag.DisallowReauthentication, err = strconv.ParseBool(strings.TrimPrefix(tagItem, "d="))
-			if err != nil {
-				return nil, err
-			}
-		case strings.HasPrefix(tagItem, "m="):
-			rTag.AllowInstanceMigration, err = strconv.ParseBool(strings.TrimPrefix(tagItem, "m="))
-			if err != nil {
-				return nil, err
-			}
-		case strings.HasPrefix(tagItem, "t="):
-			rTag.MaxTTL, err = time.ParseDuration(fmt.Sprintf("%ss", strings.TrimPrefix(tagItem, "t=")))
-			if err != nil {
-				return nil, err
-			}
-		default:
-			return nil, fmt.Errorf("unrecognized item %q in tag", tagItem)
-		}
-	}
-
-	if rTag.Role == "" {
-		return nil, fmt.Errorf("missing role name")
-	}
-
-	roleEntry, err := b.lockedAWSRole(ctx, s, rTag.Role)
-	if err != nil {
-		return nil, err
-	}
-	if roleEntry == nil {
-		return nil, fmt.Errorf("entry not found for %q", rTag.Role)
-	}
-
-	// Create a HMAC of the plaintext value of role tag and compare it with the given value.
-	verified, err := verifyRoleTagValue(rTag, roleEntry)
-	if err != nil {
-		return nil, err
-	}
-	if !verified {
-		return nil, fmt.Errorf("role tag signature verification failed")
-	}
-
-	return rTag, nil
-}
-
-// Creates base64 encoded HMAC using a per-role key.
-func createRoleTagHMACBase64(key, value string) (string, error) {
-	if key == "" {
-		return "", fmt.Errorf("invalid HMAC key")
-	}
-	hm := hmac.New(sha256.New, []byte(key))
-	hm.Write([]byte(value))
-
-	// base64 encode the hmac bytes.
-	return base64.StdEncoding.EncodeToString(hm.Sum(nil)), nil
-}
-
 // Creates a base64 encoded random nonce.
 func createRoleTagNonce() (string, error) {
 	if uuidBytes, err := uuid.GenerateRandomBytes(8); err != nil {
@@ -388,33 +225,6 @@ func createRoleTagNonce() (string, error) {
 	} else {
 		return base64.StdEncoding.EncodeToString(uuidBytes), nil
 	}
-}
-
-// Struct roleTag represents a role tag in a struct form.
-type roleTag struct {
-	Version                  string        `json:"version"`
-	InstanceID               string        `json:"instance_id"`
-	Nonce                    string        `json:"nonce"`
-	Policies                 []string      `json:"policies"`
-	MaxTTL                   time.Duration `json:"max_ttl"`
-	Role                     string        `json:"role"`
-	HMAC                     string        `json:"hmac"`
-	DisallowReauthentication bool          `json:"disallow_reauthentication"`
-	AllowInstanceMigration   bool          `json:"allow_instance_migration"`
-}
-
-func (rTag1 *roleTag) Equal(rTag2 *roleTag) bool {
-	return rTag1 != nil &&
-		rTag2 != nil &&
-		rTag1.Version == rTag2.Version &&
-		rTag1.Nonce == rTag2.Nonce &&
-		policyutil.EquivalentPolicies(rTag1.Policies, rTag2.Policies) &&
-		rTag1.MaxTTL == rTag2.MaxTTL &&
-		rTag1.Role == rTag2.Role &&
-		rTag1.HMAC == rTag2.HMAC &&
-		rTag1.InstanceID == rTag2.InstanceID &&
-		rTag1.DisallowReauthentication == rTag2.DisallowReauthentication &&
-		rTag1.AllowInstanceMigration == rTag2.AllowInstanceMigration
 }
 
 const pathRoleTagSyn = `

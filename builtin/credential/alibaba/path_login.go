@@ -23,6 +23,8 @@ import (
 	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/go-cleanhttp"
 	"github.com/hashicorp/go-uuid"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/common"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/ecsAuthMethod/whitelist"
 	"github.com/hashicorp/vault/helper/jsonutil"
 	"github.com/hashicorp/vault/helper/strutil"
 	"github.com/hashicorp/vault/logical"
@@ -59,7 +61,7 @@ of ecs.`,
 				Description: `The nonce to be used for subsequent login requests when
 auth_type is ecs.  If this parameter is not specified at
 all and if reauthentication is allowed, then the backend will generate a random
-nonce, attaches it to the instance's identity-whitelist entry and returns the
+nonce, attaches it to the instance's identity-whitelistConfig entry and returns the
 nonce back as part of auth metadata.  This value should be used with further
 login requests, to establish client authenticity. Clients can choose to set a
 custom nonce if preferred, in which case, it is recommended that clients provide
@@ -121,7 +123,7 @@ needs to be supplied along with 'identity' parameter.`,
 // and checks if the instance is running and is healthy
 func (b *backend) validateInstance(ctx context.Context, s logical.Storage, instanceID, region, accountID string) (*ecs.Instance, error) {
 	// Create an EC2 client to pull the instance information
-	ec2Client, err := b.getECSClient(ctx, s, region)
+	ec2Client, err := b.getECSClient(ctx, s, region, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -156,9 +158,9 @@ func (b *backend) validateInstance(ctx context.Context, s logical.Storage, insta
 }
 
 // validateMetadata matches the given client nonce and pending time with the
-// one cached in the identity whitelist during the previous login. But, if
+// one cached in the identity whitelistConfig during the previous login. But, if
 // reauthentication is disabled, login attempt is failed immediately.
-func validateMetadata(clientNonce, pendingTime string, storedIdentity *whitelistIdentity, roleEntry *awsRoleEntry) error {
+func validateMetadata(clientNonce, pendingTime string, storedIdentity *whitelist.Identity, roleEntry *common.RoleEntry) error {
 	// For sanity
 	if !storedIdentity.DisallowReauthentication && storedIdentity.ClientNonce == "" {
 		return fmt.Errorf("client nonce missing in stored identity")
@@ -188,7 +190,7 @@ func validateMetadata(clientNonce, pendingTime string, storedIdentity *whitelist
 	// pendingTime in the instance metadata, which sadly is only updated
 	// when an instance is stopped and started but *not* when the instance
 	// is rebooted. If reboot survivability is needed, either
-	// instrumentation to delete the instance ID from the whitelist is
+	// instrumentation to delete the instance ID from the whitelistConfig is
 	// necessary, or the client must durably store the nonce.
 	//
 	// If the `allow_instance_migration` property of the registered role is
@@ -323,7 +325,7 @@ func (b *backend) pathLoginUpdate(ctx context.Context, req *logical.Request, dat
 // The second error return value indicates whether there's an error in even
 // trying to validate those requirements
 func (b *backend) verifyInstanceMeetsRoleRequirements(ctx context.Context,
-	s logical.Storage, instance *ecs.Instance, roleEntry *awsRoleEntry, roleName string, identityDoc *identityDocument) (error, error) {
+	s logical.Storage, instance *ecs.Instance, roleEntry *common.RoleEntry, roleName string, identityDoc *identityDocument) (error, error) {
 
 	switch {
 	case instance == nil:
@@ -460,7 +462,7 @@ func (b *backend) pathLoginUpdateEc2(ctx context.Context, req *logical.Request, 
 	}
 
 	// Get the entry for the role used by the instance
-	roleEntry, err := b.lockedAWSRole(ctx, req.Storage, roleName)
+	roleEntry, err := b.roleMgr.Read(ctx, req.Storage, roleName)
 	if err != nil {
 		return nil, err
 	}
@@ -494,14 +496,14 @@ func (b *backend) pathLoginUpdateEc2(ctx context.Context, req *logical.Request, 
 		return logical.ErrorResponse(fmt.Sprintf("Error validating instance: %v", validationError)), nil
 	}
 
-	// Get the entry from the identity whitelist, if there is one
-	storedIdentity, err := whitelistIdentityEntry(ctx, req.Storage, identityDocParsed.InstanceID)
+	// Get the entry from the identity whitelistConfig, if there is one
+	storedIdentity, err := whitelist.GetIdentity(ctx, req.Storage, identityDocParsed.InstanceID)
 	if err != nil {
 		return nil, err
 	}
 
 	// disallowReauthentication value that gets cached at the stored
-	// identity-whitelist entry is determined not just by the role entry.
+	// identity-whitelistConfig entry is determined not just by the role entry.
 	// If client explicitly sets nonce to be empty, it implies intent to
 	// disable reauthentication. Also, role tag can override the 'false'
 	// value with 'true' (the other way around is not allowed).
@@ -522,7 +524,7 @@ func (b *backend) pathLoginUpdateEc2(ctx context.Context, req *logical.Request, 
 		if clientNonce == "" {
 			clientNonce = reauthenticationDisabledNonce
 
-			// Ensure that the intent lands in the whitelist
+			// Ensure that the intent lands in the whitelistConfig
 			disallowReauthentication = true
 		}
 	}
@@ -543,7 +545,7 @@ func (b *backend) pathLoginUpdateEc2(ctx context.Context, req *logical.Request, 
 		// to 'false', a role-tag login sets the value to 'true', then
 		// role gets updated to not use a role-tag, and a login attempt
 		// is made with role's value set to 'false'. Removing the entry
-		// from the identity-whitelist should be the only way to be
+		// from the identity-whitelistConfig should be the only way to be
 		// able to login from the instance again.
 		disallowReauthentication = disallowReauthentication || storedIdentity.DisallowReauthentication
 	}
@@ -561,7 +563,7 @@ func (b *backend) pathLoginUpdateEc2(ctx context.Context, req *logical.Request, 
 	// Load the current values for max TTL and policies from the role entry,
 	// before checking for overriding max TTL in the role tag.  The shortest
 	// max TTL is used to cap the token TTL; the longest max TTL is used to
-	// make the whitelist entry as long as possible as it controls for replay
+	// make the whitelistConfig entry as long as possible as it controls for replay
 	// attacks.
 	shortestMaxTTL := b.System().MaxLeaseTTL()
 	longestMaxTTL := b.System().MaxLeaseTTL()
@@ -615,12 +617,12 @@ func (b *backend) pathLoginUpdateEc2(ctx context.Context, req *logical.Request, 
 		}
 	}
 
-	// Save the login attempt in the identity whitelist
+	// Save the login attempt in the identity whitelistConfig
 	currentTime := time.Now()
 	if storedIdentity == nil {
 		// Role, ClientNonce and CreationTime of the identity entry,
 		// once set, should never change.
-		storedIdentity = &whitelistIdentity{
+		storedIdentity = &whitelist.Identity{
 			Role:         roleName,
 			ClientNonce:  clientNonce,
 			CreationTime: currentTime,
@@ -644,7 +646,7 @@ func (b *backend) pathLoginUpdateEc2(ctx context.Context, req *logical.Request, 
 		return logical.ErrorResponse("client nonce exceeding the limit of 128 characters"), nil
 	}
 
-	if err = setWhitelistIdentityEntry(ctx, req.Storage, identityDocParsed.InstanceID, storedIdentity); err != nil {
+	if err = whitelist.SetIdentity(ctx, req.Storage, identityDocParsed.InstanceID, storedIdentity); err != nil {
 		return nil, err
 	}
 
@@ -687,7 +689,7 @@ func (b *backend) pathLoginUpdateEc2(ctx context.Context, req *logical.Request, 
 // handleRoleTagLogin is used to fetch the role tag of the instance and
 // verifies it to be correct.  Then the policies for the login request will be
 // set off of the role tag, if certain criteria satisfies.
-func (b *backend) handleRoleTagLogin(ctx context.Context, s logical.Storage, roleName string, roleEntry *awsRoleEntry, instance *ecs.Instance) (*roleTagLoginResponse, error) {
+func (b *backend) handleRoleTagLogin(ctx context.Context, s logical.Storage, roleName string, roleEntry *common.RoleEntry, instance *ecs.Instance) (*roleTagLoginResponse, error) {
 	if roleEntry == nil {
 		return nil, fmt.Errorf("nil role entry")
 	}
@@ -719,7 +721,7 @@ func (b *backend) handleRoleTagLogin(ctx context.Context, s logical.Storage, rol
 	}
 
 	// Parse the role tag into a struct, extract the plaintext part of it and verify its HMAC
-	rTag, err := b.parseAndVerifyRoleTagValue(ctx, s, rTagValue)
+	rTag, err := b.roleMgr.ParseAndVerifyRoleTagValue(ctx, s, rTagValue)
 	if err != nil {
 		return nil, err
 	}
@@ -736,7 +738,7 @@ func (b *backend) handleRoleTagLogin(ctx context.Context, s logical.Storage, rol
 	}
 
 	// Check if the role tag is blacklisted
-	blacklistEntry, err := b.lockedBlacklistRoleTagEntry(ctx, s, rTagValue)
+	blacklistEntry, err := b.blacklist.LockedBlacklistRoleTagEntry(ctx, s, rTagValue)
 	if err != nil {
 		return nil, err
 	}
@@ -783,7 +785,7 @@ func (b *backend) pathLoginRenewIam(ctx context.Context, req *logical.Request, d
 	if roleName == "" {
 		return nil, fmt.Errorf("error retrieving role_name during renewal")
 	}
-	roleEntry, err := b.lockedAWSRole(ctx, req.Storage, roleName)
+	roleEntry, err := b.roleMgr.Read(ctx, req.Storage, roleName)
 	if err != nil {
 		return nil, err
 	}
@@ -902,16 +904,16 @@ func (b *backend) pathLoginRenewEc2(ctx context.Context, req *logical.Request, d
 		return nil, errwrap.Wrapf(fmt.Sprintf("failed to verify instance ID %q: {{err}}", instanceID), err)
 	}
 
-	storedIdentity, err := whitelistIdentityEntry(ctx, req.Storage, instanceID)
+	storedIdentity, err := whitelist.GetIdentity(ctx, req.Storage, instanceID)
 	if err != nil {
 		return nil, err
 	}
 	if storedIdentity == nil {
-		return nil, fmt.Errorf("failed to verify the whitelist identity entry for instance ID: %q", instanceID)
+		return nil, fmt.Errorf("failed to verify the whitelistConfig identity entry for instance ID: %q", instanceID)
 	}
 
 	// Ensure that role entry is not deleted
-	roleEntry, err := b.lockedAWSRole(ctx, req.Storage, storedIdentity.Role)
+	roleEntry, err := b.roleMgr.Read(ctx, req.Storage, storedIdentity.Role)
 	if err != nil {
 		return nil, err
 	}
@@ -949,8 +951,8 @@ func (b *backend) pathLoginRenewEc2(ctx context.Context, req *logical.Request, d
 	storedIdentity.ExpirationTime = currentTime.Add(longestMaxTTL)
 
 	// Updating the expiration time is required for the tidy operation on the
-	// whitelist identity storage items
-	if err = setWhitelistIdentityEntry(ctx, req.Storage, instanceID, storedIdentity); err != nil {
+	// whitelistConfig identity storage items
+	if err = whitelist.SetIdentity(ctx, req.Storage, instanceID, storedIdentity); err != nil {
 		return nil, err
 	}
 
@@ -1056,7 +1058,7 @@ func (b *backend) pathLoginUpdateIam(ctx context.Context, req *logical.Request, 
 		roleName = entity.FriendlyName
 	}
 
-	roleEntry, err := b.lockedAWSRole(ctx, req.Storage, roleName)
+	roleEntry, err := b.roleMgr.Read(ctx, req.Storage, roleName)
 	if err != nil {
 		return nil, err
 	}
@@ -1519,11 +1521,11 @@ document and a client created nonce. This nonce should be unique and should be u
 the instance for all future logins, unless 'disallow_reauthentication' option on the
 registered role is enabled, in which case client nonce is optional.
 
-First login attempt, creates a whitelist entry in Vault associating the instance to the nonce
+First login attempt, creates a whitelistConfig entry in Vault associating the instance to the nonce
 provided. All future logins will succeed only if the client nonce matches the nonce in the
 whitelisted entry.
 
-By default, a cron task will periodically look for expired entries in the whitelist
+By default, a cron task will periodically look for expired entries in the whitelistConfig
 and deletes them. The duration to periodically run this, is one hour by default.
 However, this can be configured using the 'config/tidy/identities' endpoint. This tidy
 action can be triggered via the API as well, using the 'tidy/identities' endpoint.

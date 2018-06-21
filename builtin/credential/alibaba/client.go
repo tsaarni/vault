@@ -3,6 +3,7 @@ package alibaba
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk"
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/auth"
@@ -13,6 +14,11 @@ import (
 	"github.com/go-errors/errors"
 	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/vault/logical"
+)
+
+const (
+	envVarAccessKeyID     = "ALIBABA_ACCESS_KEY_ID"
+	envVarSecretAccessKey = "ALIBABA_SECRET_ACCESS_KEY"
 )
 
 func (b *backend) getSTSClient(ctx context.Context, s logical.Storage, regionID string) (*sts.Client, error) {
@@ -28,20 +34,23 @@ func (b *backend) getRAMClient(ctx context.Context, s logical.Storage) (*ram.Cli
 	if err != nil {
 		return nil, err
 	}
-	// TODO will this work? Just plugging a region because it doesn't matter?
-	return ram.NewClientWithOptions("us-east-1", sdk.NewConfig(), credential)
+	// TODO will this work? Or can I just plug a region because it doesn't matter? Need to test.
+	return ram.NewClientWithOptions("", sdk.NewConfig(), credential)
 }
 
-func (b *backend) getECSClient(ctx context.Context, s logical.Storage, regionID string) (*ecs.Client, error) {
+func (b *backend) getECSClient(ctx context.Context, s logical.Storage, regionID, accountID string) (*ecs.Client, error) {
+
+	// TODO should I be getting the STS role for the account here?
+
 	credential, err := b.getCredential(ctx, s)
 	if err != nil {
 		return nil, err
 	}
+
 	return ecs.NewClientWithOptions(regionID, sdk.NewConfig(), credential)
 }
 
 func (b *backend) getCredential(ctx context.Context, s logical.Storage) (auth.Credential, error) {
-	// TODO double-check whether you can find a way for Alibaba to use, essentially, a credential chain
 	// Read the configured secret key and access key
 	config, err := b.nonLockedClientConfigEntry(ctx, s)
 	if err != nil {
@@ -53,7 +62,22 @@ func (b *backend) getCredential(ctx context.Context, s logical.Storage) (auth.Cr
 			return credentials.NewAccessKeyCredential(config.AccessKey, config.SecretKey), nil
 		}
 	}
-	// TODO support other types of creds here
+
+	// Read the secret key and access key from the outer environment.
+	accessKey := os.Getenv(envVarAccessKeyID)
+	secretKey := os.Getenv(envVarSecretAccessKey)
+	if accessKey != "" && secretKey != "" {
+		return credentials.NewAccessKeyCredential(accessKey, secretKey), nil
+	}
+
+	// TODO support other types of creds here?
+	/*
+		TODO these are the 5 client types OOB
+		ecs.NewClientWithEcsRamRole()
+		ecs.NewClientWithRamRoleArn()
+		ecs.NewClientWithRsaKeyPair()
+		ecs.NewClientWithStsToken()
+	*/
 	return nil, errors.New("unable to determine credential")
 }
 
@@ -79,7 +103,6 @@ func (b *backend) setCachedUserId(userId, arn string) {
 	}
 }
 
-// TODO what is this doing?
 func (b *backend) stsRoleForAccount(ctx context.Context, s logical.Storage, accountID string) (string, error) {
 	// Check if an STS configuration exists for the AWS account
 	sts, err := b.lockedAwsStsEntry(ctx, s, accountID)

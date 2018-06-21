@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ram"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/common"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/ecsAuthMethod/blacklist"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/ecsAuthMethod/whitelist"
 	"github.com/hashicorp/vault/helper/consts"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
@@ -27,21 +30,21 @@ func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend,
 type backend struct {
 	*framework.Backend
 
+	whitelistConfig *whitelist.ConfigHandler
+	whitelistTidy   *whitelist.TidyHandler
+	whitelist       *whitelist.Handler
+
+	blacklistConfig *blacklist.ConfigHandler
+	blacklistTidy   *blacklist.TidyHandler
+	blacklist       *blacklist.Handler
+
+	roleMgr *common.RoleManager
+
 	// Lock to make changes to any of the backend's configuration endpoints.
 	configMutex sync.RWMutex
 
-	// Lock to make changes to role entries
-	roleMutex sync.RWMutex
-
-	// Lock to make changes to the blacklist entries
-	blacklistMutex sync.RWMutex
-
-	// Guards the blacklist/whitelist tidy functions
-	tidyBlacklistCASGuard uint32
-	tidyWhitelistCASGuard uint32
-
 	// Duration after which the periodic function of the backend needs to
-	// tidy the blacklist and whitelist entries.
+	// tidy the blacklist and whitelistConfig entries.
 	tidyCooldownPeriod time.Duration
 
 	// nextTidyTime holds the time at which the periodic func should initiate
@@ -65,11 +68,19 @@ type backend struct {
 }
 
 func Backend(conf *logical.BackendConfig) (*backend, error) {
+	roleMgr := &common.RoleManager{}
 	b := &backend{
 		// Setting the periodic func to be run once in an hour.
 		// If there is a real need, this can be made configurable.
 		tidyCooldownPeriod:  time.Hour,
 		iamUserIdToArnCache: cache.New(7*24*time.Hour, 24*time.Hour),
+		whitelistConfig:     &whitelist.ConfigHandler{},
+		whitelistTidy:       &whitelist.TidyHandler{},
+		whitelist:           &whitelist.Handler{},
+		blacklistConfig:     &blacklist.ConfigHandler{},
+		blacklistTidy:       &blacklist.TidyHandler{},
+		blacklist:           &blacklist.Handler{RoleMgr: roleMgr},
+		roleMgr:             roleMgr,
 	}
 
 	b.resolveArnToUniqueIDFunc = b.resolveArnToRealUniqueId
@@ -83,7 +94,7 @@ func Backend(conf *logical.BackendConfig) (*backend, error) {
 				"login",
 			},
 			LocalStorage: []string{
-				"whitelist/identity/",
+				"whitelistConfig/identity/",
 			},
 			SealWrapStorage: []string{
 				"config/client",
@@ -98,29 +109,32 @@ func Backend(conf *logical.BackendConfig) (*backend, error) {
 			pathConfigClient(b),
 			pathConfigSts(b),
 			pathListSts(b),
-			pathConfigTidyRoletagBlacklist(b),
-			pathConfigTidyIdentityWhitelist(b),
-			pathListRoletagBlacklist(b),
-			pathRoletagBlacklist(b),
-			pathTidyRoletagBlacklist(b),
-			pathListIdentityWhitelist(b),
-			pathIdentityWhitelist(b),
-			pathTidyIdentityWhitelist(b),
+			b.blacklistConfig.PathConfigTidyRoletagBlacklist(),
+			b.blacklist.PathListRoletagBlacklist(),
+			b.blacklist.PathRoletagBlacklist(),
+			b.blacklistTidy.PathTidyRoletagBlacklist(),
+			b.whitelistConfig.PathConfigTidyIdentityWhitelist(),
+			b.whitelist.PathListIdentityWhitelist(),
+			b.whitelist.PathIdentityWhitelist(),
+			b.whitelistTidy.PathTidyIdentityWhitelist(),
 		},
 		Invalidate:  b.invalidate,
 		BackendType: logical.TypeCredential,
 	}
+	// TODO it's a little weird this doesn't happen above
+	b.blacklist.System = b.System()
 
 	return b, nil
 }
 
+// TODO does this really belong here or with the blacklist, whitelistConfig, etc.?
 // periodicFunc performs the tasks that the backend wishes to do periodically.
 // Currently this will be triggered once in a minute by the RollbackManager.
 //
 // The tasks being done currently by this function are to cleanup the expired
-// entries of both blacklist role tags and whitelist identities. Tidying is done
+// entries of both blacklist role tags and whitelistConfig identities. Tidying is done
 // not once in a minute, but once in an hour, controlled by 'tidyCooldownPeriod'.
-// Tidying of blacklist and whitelist are by default enabled. This can be
+// Tidying of blacklist and whitelistConfig are by default enabled. This can be
 // changed using `config/tidy/roletags` and `config/tidy/identities` endpoints.
 func (b *backend) periodicFunc(ctx context.Context, req *logical.Request) error {
 	// Run the tidy operations for the first time. Then run it when current
@@ -129,7 +143,7 @@ func (b *backend) periodicFunc(ctx context.Context, req *logical.Request) error 
 		if b.System().LocalMount() || !b.System().ReplicationState().HasState(consts.ReplicationPerformanceSecondary) {
 			// safety_buffer defaults to 180 days for roletag blacklist
 			safety_buffer := 15552000
-			tidyBlacklistConfigEntry, err := b.lockedConfigTidyRoleTags(ctx, req.Storage)
+			tidyBlacklistConfigEntry, err := b.blacklistConfig.LockedConfigTidyRoleTags(ctx, req.Storage)
 			if err != nil {
 				return err
 			}
@@ -145,15 +159,15 @@ func (b *backend) periodicFunc(ctx context.Context, req *logical.Request) error 
 			}
 			// tidy role tags if explicitly not disabled
 			if !skipBlacklistTidy {
-				b.tidyBlacklistRoleTag(ctx, req.Storage, safety_buffer)
+				b.blacklistTidy.TidyBlacklistRoleTag(ctx, req.Storage, safety_buffer)
 			}
 		}
 
-		// We don't check for replication state for whitelist identities as
+		// We don't check for replication state for whitelistConfig identities as
 		// these are locally stored
 
 		safety_buffer := 259200
-		tidyWhitelistConfigEntry, err := b.lockedConfigTidyIdentities(ctx, req.Storage)
+		tidyWhitelistConfigEntry, err := b.whitelistConfig.LockedConfigTidyIdentities(ctx, req.Storage)
 		if err != nil {
 			return err
 		}
@@ -169,7 +183,7 @@ func (b *backend) periodicFunc(ctx context.Context, req *logical.Request) error 
 		}
 		// tidy identities if explicitly not disabled
 		if !skipWhitelistTidy {
-			b.tidyWhitelistIdentity(ctx, req.Storage, safety_buffer)
+			b.whitelistTidy.TidyWhitelistIdentity(ctx, req.Storage, safety_buffer)
 		}
 
 		// Update the time at which to run the tidy functions again.

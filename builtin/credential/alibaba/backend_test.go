@@ -264,7 +264,7 @@ func TestBackend_ConfigTidyIdentities(t *testing.T) {
 	// test update operation
 	tidyRequest := &logical.Request{
 		Operation: logical.UpdateOperation,
-		Path:      "config/tidy/identity-whitelist",
+		Path:      "config/tidy/identity-whitelistConfig",
 		Storage:   storage,
 	}
 	data := map[string]interface{}{
@@ -284,7 +284,7 @@ func TestBackend_ConfigTidyIdentities(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resp == nil || resp.IsError() {
-		t.Fatalf("failed to read config/tidy/identity-whitelist endpoint")
+		t.Fatalf("failed to read config/tidy/identity-whitelistConfig endpoint")
 	}
 	if resp.Data["safety_buffer"].(int) != 60 || !resp.Data["disable_periodic_tidy"].(bool) {
 		t.Fatalf("bad: expected: safety_buffer:60 disable_periodic_tidy:true actual: safety_buffer:%d disable_periodic_tidy:%t\n", resp.Data["safety_buffer"].(int), resp.Data["disable_periodic_tidy"].(bool))
@@ -297,7 +297,7 @@ func TestBackend_ConfigTidyIdentities(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resp != nil {
-		t.Fatalf("failed to delete config/tidy/identity-whitelist")
+		t.Fatalf("failed to delete config/tidy/identity-whitelistConfig")
 	}
 }
 
@@ -374,7 +374,7 @@ func TestBackend_TidyIdentities(t *testing.T) {
 	// test update operation
 	_, err = b.HandleRequest(context.Background(), &logical.Request{
 		Operation: logical.UpdateOperation,
-		Path:      "tidy/identity-whitelist",
+		Path:      "tidy/identity-whitelistConfig",
 		Storage:   storage,
 	})
 	if err != nil {
@@ -1209,10 +1209,10 @@ func TestBackendAcc_LoginWithInstanceIdentityDocAndWhitelistIdentity(t *testing.
 		t.Fatalf("login attempt should have failed due to client nonce mismatch")
 	}
 
-	// Check if a whitelist identity entry is created after the login.
+	// Check if a whitelistConfig identity entry is created after the login.
 	wlRequest := &logical.Request{
 		Operation: logical.ReadOperation,
-		Path:      "identity-whitelist/" + instanceID,
+		Path:      "identity-whitelistConfig/" + instanceID,
 		Storage:   storage,
 	}
 	resp, err = b.HandleRequest(context.Background(), wlRequest)
@@ -1220,17 +1220,17 @@ func TestBackendAcc_LoginWithInstanceIdentityDocAndWhitelistIdentity(t *testing.
 		t.Fatal(err)
 	}
 	if resp == nil || resp.Data == nil || resp.Data["role"] != roleName {
-		t.Fatalf("failed to read whitelist identity")
+		t.Fatalf("failed to read whitelistConfig identity")
 	}
 
-	// Delete the whitelist identity entry.
+	// Delete the whitelistConfig identity entry.
 	wlRequest.Operation = logical.DeleteOperation
 	resp, err = b.HandleRequest(context.Background(), wlRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resp.IsError() {
-		t.Fatalf("failed to delete whitelist identity")
+		t.Fatalf("failed to delete whitelistConfig identity")
 	}
 
 	// Allow a fresh login without supplying the nonce

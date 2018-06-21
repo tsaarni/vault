@@ -1,4 +1,4 @@
-package alibaba
+package blacklist
 
 import (
 	"context"
@@ -11,7 +11,12 @@ import (
 	"github.com/hashicorp/vault/logical/framework"
 )
 
-func pathTidyRoletagBlacklist(b *backend) *framework.Path {
+type TidyHandler struct {
+	// Guards the blacklist/whitelistConfig tidy functions
+	tidyBlacklistCASGuard uint32
+}
+
+func (h *TidyHandler) PathTidyRoletagBlacklist() *framework.Path {
 	return &framework.Path{
 		Pattern: "tidy/roletag-blacklist$",
 		Fields: map[string]*framework.FieldSchema{
@@ -24,7 +29,7 @@ expiration, before it is removed from the backend storage.`,
 		},
 
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			logical.UpdateOperation: b.pathTidyRoletagBlacklistUpdate,
+			logical.UpdateOperation: h.pathTidyRoletagBlacklistUpdate,
 		},
 
 		HelpSynopsis:    pathTidyRoletagBlacklistSyn,
@@ -32,11 +37,11 @@ expiration, before it is removed from the backend storage.`,
 	}
 }
 
-// tidyBlacklistRoleTag is used to clean-up the entries in the role tag blacklist.
-func (b *backend) tidyBlacklistRoleTag(ctx context.Context, s logical.Storage, safety_buffer int) error {
-	grabbed := atomic.CompareAndSwapUint32(&b.tidyBlacklistCASGuard, 0, 1)
+// TidyBlacklistRoleTag is used to clean-up the entries in the role tag blacklist.
+func (h *TidyHandler) TidyBlacklistRoleTag(ctx context.Context, s logical.Storage, safety_buffer int) error {
+	grabbed := atomic.CompareAndSwapUint32(&h.tidyBlacklistCASGuard, 0, 1)
 	if grabbed {
-		defer atomic.StoreUint32(&b.tidyBlacklistCASGuard, 0)
+		defer atomic.StoreUint32(&h.tidyBlacklistCASGuard, 0)
 	} else {
 		return fmt.Errorf("roletag blacklist tidy operation already running")
 	}
@@ -77,8 +82,8 @@ func (b *backend) tidyBlacklistRoleTag(ctx context.Context, s logical.Storage, s
 }
 
 // pathTidyRoletagBlacklistUpdate is used to clean-up the entries in the role tag blacklist.
-func (b *backend) pathTidyRoletagBlacklistUpdate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	return nil, b.tidyBlacklistRoleTag(ctx, req.Storage, data.Get("safety_buffer").(int))
+func (h *TidyHandler) pathTidyRoletagBlacklistUpdate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	return nil, h.TidyBlacklistRoleTag(ctx, req.Storage, data.Get("safety_buffer").(int))
 }
 
 const pathTidyRoletagBlacklistSyn = `
