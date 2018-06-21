@@ -24,7 +24,8 @@ import (
 	"github.com/hashicorp/go-cleanhttp"
 	"github.com/hashicorp/go-uuid"
 	"github.com/hashicorp/vault/builtin/credential/alibaba/common"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/ecsAuthMethod/whitelist"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/ecsmethod"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/ecsmethod/whitelist"
 	"github.com/hashicorp/vault/helper/jsonutil"
 	"github.com/hashicorp/vault/helper/strutil"
 	"github.com/hashicorp/vault/logical"
@@ -236,7 +237,7 @@ func (b *backend) verifyInstanceIdentitySignature(ctx context.Context, s logical
 	// certificate and all the registered certificates via
 	// 'config/certificate/<cert_name>' endpoint, for verifying the RSA
 	// digest.
-	cert, err := b.alibabaPublicCertificate()
+	cert, err := ecsmethod.GetPublicCertificate()
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +272,7 @@ func (b *backend) parseIdentityDocument(ctx context.Context, s logical.Storage, 
 		return nil, errwrap.Wrapf("failed to parse the BER encoded PKCS#7 signature: {{err}}", err)
 	}
 
-	cert, err := b.alibabaPublicCertificate()
+	cert, err := ecsmethod.GetPublicCertificate()
 	if err != nil {
 		return nil, err
 	}

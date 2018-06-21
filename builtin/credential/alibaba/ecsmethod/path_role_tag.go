@@ -1,4 +1,4 @@
-package alibaba
+package ecsmethod
 
 import (
 	"context"
@@ -15,7 +15,12 @@ import (
 	"github.com/hashicorp/vault/logical/framework"
 )
 
-func pathRoleTag(b *backend) *framework.Path {
+type RoleTagHandler struct {
+	RoleMgr *common.RoleManager
+	System  logical.SystemView
+}
+
+func (h *RoleTagHandler) PathRoleTag() *framework.Path {
 	return &framework.Path{
 		Pattern: "role/" + framework.GenericNameRegex("role") + "/tag$",
 		Fields: map[string]*framework.FieldSchema{
@@ -55,7 +60,7 @@ If set, the created tag can only be used by the instance with the given ID.`,
 		},
 
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			logical.UpdateOperation: b.pathRoleTagUpdate,
+			logical.UpdateOperation: h.pathRoleTagUpdate,
 		},
 
 		HelpSynopsis:    pathRoleTagSyn,
@@ -65,14 +70,14 @@ If set, the created tag can only be used by the instance with the given ID.`,
 
 // pathRoleTagUpdate is used to create an EC2 instance tag which will
 // identify the Vault resources that the instance will be authorized for.
-func (b *backend) pathRoleTagUpdate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+func (h *RoleTagHandler) pathRoleTagUpdate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	roleName := strings.ToLower(data.Get("role").(string))
 	if roleName == "" {
 		return logical.ErrorResponse("missing role"), nil
 	}
 
 	// Fetch the role entry
-	roleEntry, err := b.roleMgr.Read(ctx, req.Storage, roleName)
+	roleEntry, err := h.RoleMgr.Read(ctx, req.Storage, roleName)
 	if err != nil {
 		return nil, err
 	}
@@ -126,8 +131,8 @@ func (b *backend) pathRoleTagUpdate(ctx context.Context, req *logical.Request, d
 	maxTTL := time.Duration(data.Get("max_ttl").(int)) * time.Second
 
 	// max_ttl on the tag should not be greater than the system view's max_ttl value.
-	if maxTTL > b.System().MaxLeaseTTL() {
-		resp.AddWarning(fmt.Sprintf("Given max TTL of %d is greater than the mount maximum of %d seconds, and will be capped at login time.", maxTTL/time.Second, b.System().MaxLeaseTTL()/time.Second))
+	if maxTTL > h.System.MaxLeaseTTL() {
+		resp.AddWarning(fmt.Sprintf("Given max TTL of %d is greater than the mount maximum of %d seconds, and will be capped at login time.", maxTTL/time.Second, h.System.MaxLeaseTTL()/time.Second))
 	}
 	// If max_ttl is set for the role, check the bounds for tag's max_ttl value using that.
 	if roleEntry.MaxTTL != time.Duration(0) && maxTTL > roleEntry.MaxTTL {

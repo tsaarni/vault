@@ -1,8 +1,9 @@
-package alibaba
+package rammethod
 
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
@@ -13,12 +14,16 @@ type alibabaSTSEntry struct {
 	StsRole string `json:"sts_role"`
 }
 
-func pathListSts(b *backend) *framework.Path {
+type ConfigHandler struct {
+	configMutex sync.RWMutex
+}
+
+func (h *ConfigHandler) PathListSts() *framework.Path {
 	return &framework.Path{
 		Pattern: "config/sts/?",
 
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			logical.ListOperation: b.pathStsList,
+			logical.ListOperation: h.pathStsList,
 		},
 
 		HelpSynopsis:    pathListStsHelpSyn,
@@ -26,7 +31,7 @@ func pathListSts(b *backend) *framework.Path {
 	}
 }
 
-func pathConfigSts(b *backend) *framework.Path {
+func (h *ConfigHandler) PathConfigSts() *framework.Path {
 	return &framework.Path{
 		Pattern: "config/sts/" + framework.GenericNameRegex("account_id"),
 		Fields: map[string]*framework.FieldSchema{
@@ -43,13 +48,13 @@ The Vault server must have permissions to assume this role.`,
 			},
 		},
 
-		ExistenceCheck: b.pathConfigStsExistenceCheck,
+		ExistenceCheck: h.pathConfigStsExistenceCheck,
 
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			logical.CreateOperation: b.pathConfigStsCreateUpdate,
-			logical.UpdateOperation: b.pathConfigStsCreateUpdate,
-			logical.ReadOperation:   b.pathConfigStsRead,
-			logical.DeleteOperation: b.pathConfigStsDelete,
+			logical.CreateOperation: h.pathConfigStsCreateUpdate,
+			logical.UpdateOperation: h.pathConfigStsCreateUpdate,
+			logical.ReadOperation:   h.pathConfigStsRead,
+			logical.DeleteOperation: h.pathConfigStsDelete,
 		},
 
 		HelpSynopsis:    pathConfigStsSyn,
@@ -59,13 +64,13 @@ The Vault server must have permissions to assume this role.`,
 
 // Establishes dichotomy of request operation between CreateOperation and UpdateOperation.
 // Returning 'true' forces an UpdateOperation, CreateOperation otherwise.
-func (b *backend) pathConfigStsExistenceCheck(ctx context.Context, req *logical.Request, data *framework.FieldData) (bool, error) {
+func (h *ConfigHandler) pathConfigStsExistenceCheck(ctx context.Context, req *logical.Request, data *framework.FieldData) (bool, error) {
 	accountID := data.Get("account_id").(string)
 	if accountID == "" {
 		return false, fmt.Errorf("missing account_id")
 	}
 
-	entry, err := b.lockedAwsStsEntry(ctx, req.Storage, accountID)
+	entry, err := h.LockedAwsStsEntry(ctx, req.Storage, accountID)
 	if err != nil {
 		return false, err
 	}
@@ -74,9 +79,9 @@ func (b *backend) pathConfigStsExistenceCheck(ctx context.Context, req *logical.
 }
 
 // pathStsList is used to list all the AWS STS role configurations
-func (b *backend) pathStsList(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	b.configMutex.RLock()
-	defer b.configMutex.RUnlock()
+func (h *ConfigHandler) pathStsList(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	h.configMutex.RLock()
+	defer h.configMutex.RUnlock()
 	sts, err := req.Storage.List(ctx, "config/sts/")
 	if err != nil {
 		return nil, err
@@ -87,7 +92,7 @@ func (b *backend) pathStsList(ctx context.Context, req *logical.Request, data *f
 // nonLockedSetAwsStsEntry creates or updates an STS role association with the given accountID
 // This method does not acquire the write lock before creating or updating. If locking is
 // desired, use lockedSetAwsStsEntry instead
-func (b *backend) nonLockedSetAwsStsEntry(ctx context.Context, s logical.Storage, accountID string, stsEntry *alibabaSTSEntry) error {
+func (h *ConfigHandler) nonLockedSetAwsStsEntry(ctx context.Context, s logical.Storage, accountID string, stsEntry *alibabaSTSEntry) error {
 	if accountID == "" {
 		return fmt.Errorf("missing AWS account ID")
 	}
@@ -110,7 +115,7 @@ func (b *backend) nonLockedSetAwsStsEntry(ctx context.Context, s logical.Storage
 
 // lockedSetAwsStsEntry creates or updates an STS role association with the given accountID
 // This method acquires the write lock before creating or updating the STS entry.
-func (b *backend) lockedSetAwsStsEntry(ctx context.Context, s logical.Storage, accountID string, stsEntry *alibabaSTSEntry) error {
+func (h *ConfigHandler) lockedSetAwsStsEntry(ctx context.Context, s logical.Storage, accountID string, stsEntry *alibabaSTSEntry) error {
 	if accountID == "" {
 		return fmt.Errorf("missing AWS account ID")
 	}
@@ -119,16 +124,16 @@ func (b *backend) lockedSetAwsStsEntry(ctx context.Context, s logical.Storage, a
 		return fmt.Errorf("missing sts entry")
 	}
 
-	b.configMutex.Lock()
-	defer b.configMutex.Unlock()
+	h.configMutex.Lock()
+	defer h.configMutex.Unlock()
 
-	return b.nonLockedSetAwsStsEntry(ctx, s, accountID, stsEntry)
+	return h.nonLockedSetAwsStsEntry(ctx, s, accountID, stsEntry)
 }
 
 // nonLockedAwsStsEntry returns the STS role associated with the given accountID.
 // This method does not acquire the read lock before returning information. If locking is
-// desired, use lockedAwsStsEntry instead
-func (b *backend) nonLockedAwsStsEntry(ctx context.Context, s logical.Storage, accountID string) (*alibabaSTSEntry, error) {
+// desired, use LockedAwsStsEntry instead
+func (h *ConfigHandler) nonLockedAwsStsEntry(ctx context.Context, s logical.Storage, accountID string) (*alibabaSTSEntry, error) {
 	entry, err := s.Get(ctx, "config/sts/"+accountID)
 	if err != nil {
 		return nil, err
@@ -144,23 +149,23 @@ func (b *backend) nonLockedAwsStsEntry(ctx context.Context, s logical.Storage, a
 	return &stsEntry, nil
 }
 
-// lockedAwsStsEntry returns the STS role associated with the given accountID.
+// LockedAwsStsEntry returns the STS role associated with the given accountID.
 // This method acquires the read lock before returning the association.
-func (b *backend) lockedAwsStsEntry(ctx context.Context, s logical.Storage, accountID string) (*alibabaSTSEntry, error) {
-	b.configMutex.RLock()
-	defer b.configMutex.RUnlock()
+func (h *ConfigHandler) LockedAwsStsEntry(ctx context.Context, s logical.Storage, accountID string) (*alibabaSTSEntry, error) {
+	h.configMutex.RLock()
+	defer h.configMutex.RUnlock()
 
-	return b.nonLockedAwsStsEntry(ctx, s, accountID)
+	return h.nonLockedAwsStsEntry(ctx, s, accountID)
 }
 
 // pathConfigStsRead is used to return information about an STS role/AWS accountID association
-func (b *backend) pathConfigStsRead(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+func (h *ConfigHandler) pathConfigStsRead(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	accountID := data.Get("account_id").(string)
 	if accountID == "" {
 		return logical.ErrorResponse("missing account id"), nil
 	}
 
-	stsEntry, err := b.lockedAwsStsEntry(ctx, req.Storage, accountID)
+	stsEntry, err := h.LockedAwsStsEntry(ctx, req.Storage, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -176,17 +181,17 @@ func (b *backend) pathConfigStsRead(ctx context.Context, req *logical.Request, d
 }
 
 // pathConfigStsCreateUpdate is used to associate an STS role with a given AWS accountID
-func (b *backend) pathConfigStsCreateUpdate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+func (h *ConfigHandler) pathConfigStsCreateUpdate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	accountID := data.Get("account_id").(string)
 	if accountID == "" {
 		return logical.ErrorResponse("missing AWS account ID"), nil
 	}
 
-	b.configMutex.Lock()
-	defer b.configMutex.Unlock()
+	h.configMutex.Lock()
+	defer h.configMutex.Unlock()
 
 	// Check if an STS role is already registered
-	stsEntry, err := b.nonLockedAwsStsEntry(ctx, req.Storage, accountID)
+	stsEntry, err := h.nonLockedAwsStsEntry(ctx, req.Storage, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +212,7 @@ func (b *backend) pathConfigStsCreateUpdate(ctx context.Context, req *logical.Re
 	}
 
 	// save the provided STS role
-	if err := b.nonLockedSetAwsStsEntry(ctx, req.Storage, accountID, stsEntry); err != nil {
+	if err := h.nonLockedSetAwsStsEntry(ctx, req.Storage, accountID, stsEntry); err != nil {
 		return nil, err
 	}
 
@@ -215,9 +220,9 @@ func (b *backend) pathConfigStsCreateUpdate(ctx context.Context, req *logical.Re
 }
 
 // pathConfigStsDelete is used to delete a previously configured STS configuration
-func (b *backend) pathConfigStsDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	b.configMutex.Lock()
-	defer b.configMutex.Unlock()
+func (h *ConfigHandler) pathConfigStsDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	h.configMutex.Lock()
+	defer h.configMutex.Unlock()
 
 	accountID := data.Get("account_id").(string)
 	if accountID == "" {

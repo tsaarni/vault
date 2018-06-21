@@ -1,4 +1,4 @@
-package alibaba
+package ecsmethod
 
 import (
 	"crypto/x509"
@@ -29,7 +29,7 @@ DoJeqU7qZjyCaUBkPimsz/1eRod6d4P5qxTj
 -----END CERTIFICATE-----
 `
 
-func (b *backend) alibabaPublicCertificate() (*x509.Certificate, error) {
+func GetPublicCertificate() (*x509.Certificate, error) {
 	// Decode the PEM block and error out if a block is not detected in the first attempt
 	decodedPublicCert, rest := pem.Decode([]byte(genericAlibabaPublicCertificatePkcs7))
 	if len(rest) != 0 {

@@ -3,13 +3,16 @@ package alibaba
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
+
+	"sync"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ram"
 	"github.com/hashicorp/vault/builtin/credential/alibaba/common"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/ecsAuthMethod/blacklist"
-	"github.com/hashicorp/vault/builtin/credential/alibaba/ecsAuthMethod/whitelist"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/ecsmethod"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/ecsmethod/blacklist"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/ecsmethod/whitelist"
+	"github.com/hashicorp/vault/builtin/credential/alibaba/rammethod"
 	"github.com/hashicorp/vault/helper/consts"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
@@ -38,7 +41,10 @@ type backend struct {
 	blacklistTidy   *blacklist.TidyHandler
 	blacklist       *blacklist.Handler
 
-	roleMgr *common.RoleManager
+	stsConfig *rammethod.ConfigHandler
+
+	roleMgr  *common.RoleManager
+	roleTags *ecsmethod.RoleTagHandler
 
 	// Lock to make changes to any of the backend's configuration endpoints.
 	configMutex sync.RWMutex
@@ -81,6 +87,8 @@ func Backend(conf *logical.BackendConfig) (*backend, error) {
 		blacklistTidy:       &blacklist.TidyHandler{},
 		blacklist:           &blacklist.Handler{RoleMgr: roleMgr},
 		roleMgr:             roleMgr,
+		stsConfig:           &rammethod.ConfigHandler{},
+		roleTags:            &ecsmethod.RoleTagHandler{RoleMgr: roleMgr},
 	}
 
 	b.resolveArnToUniqueIDFunc = b.resolveArnToRealUniqueId
@@ -105,10 +113,10 @@ func Backend(conf *logical.BackendConfig) (*backend, error) {
 			pathListRole(b),
 			pathListRoles(b),
 			pathRole(b),
-			pathRoleTag(b),
+			b.roleTags.PathRoleTag(),
 			pathConfigClient(b),
-			pathConfigSts(b),
-			pathListSts(b),
+			b.stsConfig.PathConfigSts(),
+			b.stsConfig.PathListSts(),
 			b.blacklistConfig.PathConfigTidyRoletagBlacklist(),
 			b.blacklist.PathListRoletagBlacklist(),
 			b.blacklist.PathRoletagBlacklist(),
@@ -123,6 +131,7 @@ func Backend(conf *logical.BackendConfig) (*backend, error) {
 	}
 	// TODO it's a little weird this doesn't happen above
 	b.blacklist.System = b.System()
+	b.roleTags.System = b.System()
 
 	return b, nil
 }

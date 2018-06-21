@@ -105,7 +105,7 @@ func (b *backend) setCachedUserId(userId, arn string) {
 
 func (b *backend) stsRoleForAccount(ctx context.Context, s logical.Storage, accountID string) (string, error) {
 	// Check if an STS configuration exists for the AWS account
-	sts, err := b.lockedAwsStsEntry(ctx, s, accountID)
+	sts, err := b.stsConfig.LockedAwsStsEntry(ctx, s, accountID)
 	if err != nil {
 		return "", errwrap.Wrapf(fmt.Sprintf("error fetching STS config for account ID %q: {{err}}", accountID), err)
 	}
